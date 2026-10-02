@@ -1092,4 +1092,4 @@ viClassify currently provides a complete standalone CLI workflow for numerical t
 
 ## License
 
-No license is defined by the current project materials. Add a `LICENSE` file and update this section before distribution, reuse by third parties, or acceptance of external contributions.
+This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
