@@ -501,6 +501,15 @@ balanced_accuracy = (1 / K) * sum_k recall_k
 
 It gives every class equal influence regardless of frequency.
 
+**Important:** viClassify calculates holdout balanced accuracy as macro recall over
+the complete observed reporting class order. A class with no true
+holdout observations receives recall 0 through `zero_division=0` and
+remains in the denominator. This conservative convention prevents
+balanced accuracy from increasing merely because a difficult or rare
+class is absent from the chronological holdout. Consequently, holdout
+`balanced_accuracy` and `macro_recall` are intentionally identical in
+this application.
+
 ### Precision, recall, and F1
 
 ```text
@@ -757,9 +766,7 @@ Example:
 import joblib
 import pandas as pd
 
-artifact = joblib.load(
-    "of_results/production_extra_trees.joblib"
-)
+artifact = joblib.load("of_results/production_extra_trees.joblib")
 
 pipeline = artifact["model"]
 features = artifact["features"]
@@ -807,9 +814,7 @@ The production model has no untouched internal test set remaining after full-dat
 ```python
 import joblib
 
-artifact = joblib.load(
-    "of_results/production_logistic_regression.joblib"
-)
+artifact = joblib.load("of_results/production_logistic_regression.joblib")
 
 pipeline = artifact["model"]
 classifier = pipeline.named_steps["classifier"]
@@ -1029,7 +1034,7 @@ The classifier cannot learn a class absent from training. Reduce `--test-fractio
 
 ### Chronological testing partition lacks a class
 
-The run continues with a warning. Per-class metrics for the absent class are not empirically evaluated in that holdout, and some aggregate metrics require careful interpretation.
+The run continues with a warning. Per-class metrics for the absent class are not empirically evaluated in that holdout. Under viClassify's reporting convention, the absent class contributes zero recall to the holdout `balanced_accuracy` and `macro_recall` calculations (using `zero_division=0`), and the denominator remains the total number of reporting classes. This conservative convention prevents balanced accuracy from increasing merely because a difficult or rare class is absent from the chronological holdout. The zero recall contribution is a reporting convention, not an empirical measurement.
 
 ### Cross-validation cannot run
 

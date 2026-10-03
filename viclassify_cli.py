@@ -7,7 +7,7 @@ import re
 import warnings
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import joblib
 import matplotlib
@@ -32,7 +32,6 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     ConfusionMatrixDisplay,
     accuracy_score,
-    balanced_accuracy_score,
     classification_report,
     confusion_matrix,
     f1_score,
@@ -72,7 +71,7 @@ class ClassificationAnalysis:
         "Histogram Gradient Boosting",
     )
 
-    SCORING = {
+    SCORING: ClassVar[dict[str, Any]] = {
         "accuracy": "accuracy",
         "balanced_accuracy": "balanced_accuracy",
         "macro_precision": make_scorer(
@@ -196,17 +195,13 @@ class ClassificationAnalysis:
         missing_columns = sorted(set(required) - set(df.columns))
 
         if missing_columns:
-            raise ValueError(
-                f"Missing required columns: {missing_columns}"
-            )
+            raise ValueError(f"Missing required columns: {missing_columns}")
 
         if df.empty:
             raise ValueError("Dataset is empty")
 
         if "Sequence" in df.columns:
-            raise ValueError(
-                "Input already contains reserved column 'Sequence'"
-            )
+            raise ValueError("Input already contains reserved column 'Sequence'")
 
         unused = sorted(set(df.columns) - set(required))
 
@@ -280,9 +275,7 @@ class ClassificationAnalysis:
         )
 
         all_missing_features = [
-            feature
-            for feature in self.cfg.features
-            if df[feature].isna().all()
+            feature for feature in self.cfg.features if df[feature].isna().all()
         ]
 
         if all_missing_features:
@@ -294,22 +287,16 @@ class ClassificationAnalysis:
         y = df[self.cfg.target].astype("string").str.strip()
 
         if y.isna().any() or y.eq("").any():
-            raise ValueError(
-                "Target contains missing or empty labels"
-            )
+            raise ValueError("Target contains missing or empty labels")
 
         df[self.cfg.target] = y
         observed = sorted(y.unique().tolist())
 
         if len(observed) < 2:
-            raise ValueError(
-                "At least two target classes are required"
-            )
+            raise ValueError("At least two target classes are required")
 
         if self.cfg.class_order:
-            unknown = sorted(
-                set(self.cfg.class_order) - set(observed)
-            )
+            unknown = sorted(set(self.cfg.class_order) - set(observed))
 
             if unknown:
                 warnings.warn(
@@ -318,16 +305,10 @@ class ClassificationAnalysis:
                 )
 
             self.classes = [
-                label
-                for label in self.cfg.class_order
-                if label in observed
+                label for label in self.cfg.class_order if label in observed
             ]
 
-            self.classes += [
-                label
-                for label in observed
-                if label not in self.classes
-            ]
+            self.classes += [label for label in observed if label not in self.classes]
         else:
             self.classes = observed
 
@@ -346,9 +327,7 @@ class ClassificationAnalysis:
         features = list(self.cfg.features)
 
         missing = df.isna().sum().to_frame("missing_count")
-        missing["missing_percentage"] = (
-            100 * missing["missing_count"] / len(df)
-        )
+        missing["missing_percentage"] = 100 * missing["missing_count"] / len(df)
         missing.to_csv(
             self.path("missing_values.csv"),
             index_label="column",
@@ -365,11 +344,7 @@ class ClassificationAnalysis:
             index=False,
         )
 
-        counts = (
-            df[self.cfg.target]
-            .value_counts()
-            .reindex(self.classes, fill_value=0)
-        )
+        counts = df[self.cfg.target].value_counts().reindex(self.classes, fill_value=0)
 
         distribution = pd.DataFrame(
             {
@@ -383,22 +358,24 @@ class ClassificationAnalysis:
             index_label="class",
         )
 
-        summary = df[features].describe(
-            percentiles=[
-                0.01,
-                0.05,
-                0.25,
-                0.50,
-                0.75,
-                0.95,
-                0.99,
-            ]
-        ).T
+        summary = (
+            df[features]
+            .describe(
+                percentiles=[
+                    0.01,
+                    0.05,
+                    0.25,
+                    0.50,
+                    0.75,
+                    0.95,
+                    0.99,
+                ]
+            )
+            .T
+        )
 
         summary["missing"] = df[features].isna().sum()
-        summary["unique_values"] = df[features].nunique(
-            dropna=True
-        )
+        summary["unique_values"] = df[features].nunique(dropna=True)
         summary["skewness"] = df[features].skew()
         summary["kurtosis"] = df[features].kurtosis()
 
@@ -407,33 +384,26 @@ class ClassificationAnalysis:
             index_label="feature",
         )
 
-        grouped = (
-            df.groupby(
-                self.cfg.target,
-                observed=True,
-            )[features]
-            .agg(
-                [
-                    "count",
-                    "mean",
-                    "median",
-                    "std",
-                    "min",
-                    "max",
-                ]
-            )
+        grouped = df.groupby(
+            self.cfg.target,
+            observed=True,
+        )[features].agg(
+            [
+                "count",
+                "mean",
+                "median",
+                "std",
+                "min",
+                "max",
+            ]
         )
 
-        grouped.to_csv(
-            self.path("numerical_summary_by_class.csv")
-        )
+        grouped.to_csv(self.path("numerical_summary_by_class.csv"))
 
         audit = pd.DataFrame(index=features)
         audit["non_missing"] = df[features].count()
         audit["missing"] = df[features].isna().sum()
-        audit["unique_values"] = df[features].nunique(
-            dropna=True
-        )
+        audit["unique_values"] = df[features].nunique(dropna=True)
         audit["variance"] = df[features].var()
 
         audit["most_common_fraction"] = [
@@ -452,8 +422,7 @@ class ClassificationAnalysis:
 
         audit["constant"] = audit["unique_values"] <= 1
         audit["near_constant"] = (
-            audit["most_common_fraction"]
-            >= self.cfg.near_constant_threshold
+            audit["most_common_fraction"] >= self.cfg.near_constant_threshold
         )
 
         audit.to_csv(
@@ -461,9 +430,7 @@ class ClassificationAnalysis:
             index_label="feature",
         )
 
-        constant_features = audit.index[
-            audit["constant"]
-        ].tolist()
+        constant_features = audit.index[audit["constant"]].tolist()
 
         if constant_features:
             warnings.warn(
@@ -479,11 +446,7 @@ class ClassificationAnalysis:
         for method in ("pearson", "spearman"):
             corr = x.corr(method=method)
 
-            corr.to_csv(
-                self.path(
-                    f"{method}_correlation_matrix.csv"
-                )
-            )
+            corr.to_csv(self.path(f"{method}_correlation_matrix.csv"))
 
             pairs: list[dict[str, Any]] = []
 
@@ -498,9 +461,7 @@ class ClassificationAnalysis:
                             "feature_2": second,
                             "correlation": value,
                             "absolute_correlation": (
-                                abs(value)
-                                if pd.notna(value)
-                                else np.nan
+                                abs(value) if pd.notna(value) else np.nan
                             ),
                         }
                     )
@@ -523,9 +484,7 @@ class ClassificationAnalysis:
                 )
 
             pairs_frame.to_csv(
-                self.path(
-                    f"{method}_correlation_pairs.csv"
-                ),
+                self.path(f"{method}_correlation_pairs.csv"),
                 index=False,
             )
 
@@ -564,18 +523,11 @@ class ClassificationAnalysis:
                 ax.text(
                     j,
                     i,
-                    (
-                        "NA"
-                        if pd.isna(value)
-                        else f"{value:.2f}"
-                    ),
+                    ("NA" if pd.isna(value) else f"{value:.2f}"),
                     ha="center",
                     va="center",
                     color=(
-                        "white"
-                        if pd.notna(value)
-                        and abs(value) > 0.65
-                        else "black"
+                        "white" if pd.notna(value) and abs(value) > 0.65 else "black"
                     ),
                 )
 
@@ -585,13 +537,9 @@ class ClassificationAnalysis:
             label=f"{method.title()} correlation",
         )
 
-        ax.set_title(
-            f"{method.title()} Correlation Matrix"
-        )
+        ax.set_title(f"{method.title()} Correlation Matrix")
 
-        self.savefig(
-            f"{method}_correlation_matrix.png"
-        )
+        self.savefig(f"{method}_correlation_matrix.png")
 
     def exploratory_plots(self) -> None:
         self.heading("4. Exploratory diagnostic plots")
@@ -600,11 +548,7 @@ class ClassificationAnalysis:
         target = self.cfg.target
         features = list(self.cfg.features)
 
-        counts = (
-            df[target]
-            .value_counts()
-            .reindex(self.classes, fill_value=0)
-        )
+        counts = df[target].value_counts().reindex(self.classes, fill_value=0)
 
         plt.figure(figsize=(8, 5))
 
@@ -668,14 +612,12 @@ class ClassificationAnalysis:
                 )
                 ax.legend()
 
-            ax.set_title(
-                f"Distribution of {feature}"
-            )
+            ax.set_title(f"Distribution of {feature}")
             ax.set_xlabel(feature)
             ax.set_ylabel("Frequency")
             ax.grid(alpha=0.3)
 
-        for ax in axes[len(features):]:
+        for ax in axes[len(features) :]:
             fig.delaxes(ax)
 
         self.savefig("feature_histograms.png")
@@ -704,60 +646,42 @@ class ClassificationAnalysis:
                 range(1, len(self.classes) + 1),
                 labels=self.classes,
             )
-            ax.set_title(
-                f"{feature} by Class"
-            )
+            ax.set_title(f"{feature} by Class")
             ax.set_xlabel("Class")
             ax.set_ylabel(feature)
             ax.grid(axis="y", alpha=0.3)
 
-        for ax in axes[len(features):]:
+        for ax in axes[len(features) :]:
             fig.delaxes(ax)
 
-        self.savefig(
-            "feature_boxplots_by_class.png"
-        )
+        self.savefig("feature_boxplots_by_class.png")
 
     def create_chronological_split(self) -> None:
-        self.heading(
-            "5. Creating chronological holdout"
-        )
+        self.heading("5. Creating chronological holdout")
 
         n = len(self.data)
-        split = int(
-            np.floor(
-                n * (1 - self.cfg.test_fraction)
-            )
-        )
+        split = int(np.floor(n * (1 - self.cfg.test_fraction)))
 
         if not 0 < split < n:
-            raise ValueError(
-                "test-fraction creates an empty partition"
-            )
+            raise ValueError("test-fraction creates an empty partition")
 
         self.train_indices = np.arange(split)
         self.test_indices = np.arange(split, n)
 
         _, _, y_train, y_test = self.split_data()
 
-        missing_train = sorted(
-            set(self.classes) - set(y_train)
-        )
+        missing_train = sorted(set(self.classes) - set(y_train))
 
         if missing_train:
             raise ValueError(
-                "Chronological training partition lacks "
-                f"classes: {missing_train}"
+                f"Chronological training partition lacks classes: {missing_train}"
             )
 
-        missing_test = sorted(
-            set(self.classes) - set(y_test)
-        )
+        missing_test = sorted(set(self.classes) - set(y_test))
 
         if missing_test:
             warnings.warn(
-                "Chronological test partition lacks "
-                f"classes: {missing_test}",
+                f"Chronological test partition lacks classes: {missing_test}",
                 stacklevel=2,
             )
 
@@ -769,38 +693,24 @@ class ClassificationAnalysis:
                 stacklevel=2,
             )
 
-        train_counts = (
-            y_train.value_counts()
-            .reindex(self.classes, fill_value=0)
-        )
-        test_counts = (
-            y_test.value_counts()
-            .reindex(self.classes, fill_value=0)
-        )
+        train_counts = y_train.value_counts().reindex(self.classes, fill_value=0)
+        test_counts = y_test.value_counts().reindex(self.classes, fill_value=0)
 
         split_df = pd.DataFrame(
             {
                 "training_count": train_counts,
-                "training_percentage": (
-                    100 * train_counts / len(y_train)
-                ),
+                "training_percentage": (100 * train_counts / len(y_train)),
                 "testing_count": test_counts,
-                "testing_percentage": (
-                    100 * test_counts / len(y_test)
-                ),
+                "testing_percentage": (100 * test_counts / len(y_test)),
             }
         )
 
         split_df.to_csv(
-            self.path(
-                "chronological_split_distribution.csv"
-            ),
+            self.path("chronological_split_distribution.csv"),
             index_label="class",
         )
 
-        assignments = self.data[
-            ["Sequence", self.cfg.target]
-        ].copy()
+        assignments = self.data[["Sequence", self.cfg.target]].copy()
 
         assignments["partition"] = np.where(
             assignments.index < split,
@@ -809,9 +719,7 @@ class ClassificationAnalysis:
         )
 
         assignments.to_csv(
-            self.path(
-                "chronological_split_assignments.csv"
-            ),
+            self.path("chronological_split_assignments.csv"),
             index=False,
         )
 
@@ -839,19 +747,15 @@ class ClassificationAnalysis:
         )
         plt.xlabel("Class")
         plt.ylabel("Observations")
-        plt.title(
-            "Chronological Split Distribution"
-        )
+        plt.title("Chronological Split Distribution")
         plt.grid(axis="y", alpha=0.3)
         plt.legend()
 
-        self.savefig(
-            "chronological_split_distribution.png"
-        )
+        self.savefig("chronological_split_distribution.png")
 
         figure_rows = len(self.cfg.features) + 1
 
-        fig, axes = plt.subplots(
+        _fig, axes = plt.subplots(
             figure_rows,
             1,
             figsize=(17, 2.4 * figure_rows),
@@ -878,16 +782,11 @@ class ClassificationAnalysis:
             ax.set_ylabel(feature)
             ax.grid(alpha=0.3)
 
-        class_to_int = {
-            label: index
-            for index, label in enumerate(self.classes)
-        }
+        class_to_int = {label: index for index, label in enumerate(self.classes)}
 
         axes[-1].scatter(
             self.data["Sequence"],
-            self.data[self.cfg.target].map(
-                class_to_int
-            ),
+            self.data[self.cfg.target].map(class_to_int),
             s=8,
         )
 
@@ -902,18 +801,12 @@ class ClassificationAnalysis:
             labels=self.classes,
         )
         axes[-1].set_ylabel("Class")
-        axes[-1].set_xlabel(
-            "Observation Sequence"
-        )
+        axes[-1].set_xlabel("Observation Sequence")
         axes[-1].grid(alpha=0.3)
 
-        axes[0].set_title(
-            "Predictors and Classes by Sequence"
-        )
+        axes[0].set_title("Predictors and Classes by Sequence")
 
-        self.savefig(
-            "predictors_and_classes_by_sequence.png"
-        )
+        self.savefig("predictors_and_classes_by_sequence.png")
 
     def build_models(self) -> None:
         self.heading("6. Building model families")
@@ -926,9 +819,7 @@ class ClassificationAnalysis:
                         [
                             (
                                 "imputer",
-                                SimpleImputer(
-                                    strategy="median"
-                                ),
+                                SimpleImputer(strategy="median"),
                             ),
                             (
                                 "scaler",
@@ -950,9 +841,7 @@ class ClassificationAnalysis:
                         [
                             (
                                 "imputer",
-                                SimpleImputer(
-                                    strategy="median"
-                                ),
+                                SimpleImputer(strategy="median"),
                             ),
                         ]
                     ),
@@ -992,9 +881,7 @@ class ClassificationAnalysis:
                     (
                         "classifier",
                         RandomForestClassifier(
-                            class_weight=(
-                                "balanced_subsample"
-                            ),
+                            class_weight=("balanced_subsample"),
                             random_state=random_state,
                             n_jobs=n_jobs,
                         ),
@@ -1025,9 +912,7 @@ class ClassificationAnalysis:
                     ),
                     (
                         "classifier",
-                        HistGradientBoostingClassifier(
-                            random_state=random_state
-                        ),
+                        HistGradientBoostingClassifier(random_state=random_state),
                     ),
                 ]
             ),
@@ -1092,9 +977,7 @@ class ClassificationAnalysis:
         }
 
     def cv(self, y: pd.Series) -> StratifiedKFold:
-        minimum_class_count = int(
-            y.value_counts().min()
-        )
+        minimum_class_count = int(y.value_counts().min())
 
         folds = min(
             self.cfg.cv_folds,
@@ -1122,10 +1005,7 @@ class ClassificationAnalysis:
         )
 
     def tune_on_training_only(self) -> None:
-        self.heading(
-            "7. Hyperparameter tuning on chronological "
-            "training data only"
-        )
+        self.heading("7. Hyperparameter tuning on chronological training data only")
 
         X_train, _, y_train, _ = self.split_data()
         cv = self.cv(y_train)
@@ -1147,28 +1027,20 @@ class ClassificationAnalysis:
             search.fit(X_train, y_train)
 
             slug = self.slug(name)
-            results = pd.DataFrame(
-                search.cv_results_
-            )
+            results = pd.DataFrame(search.cv_results_)
 
             results.to_csv(
-                self.path(
-                    f"tuning_cv_results_{slug}.csv"
-                ),
+                self.path(f"tuning_cv_results_{slug}.csv"),
                 index=False,
             )
 
-            self.best_params[name] = (
-                search.best_params_
-            )
+            self.best_params[name] = search.best_params_
 
             best_index = int(search.best_index_)
 
             row: dict[str, Any] = {
                 "model": name,
-                "selection_metric": (
-                    self.cfg.selection_metric
-                ),
+                "selection_metric": (self.cfg.selection_metric),
                 "best_parameters": json.dumps(
                     search.best_params_,
                     sort_keys=True,
@@ -1176,18 +1048,14 @@ class ClassificationAnalysis:
             }
 
             for metric in self.SCORING:
-                row[f"cv_{metric}_mean"] = (
-                    results.loc[
-                        best_index,
-                        f"mean_test_{metric}",
-                    ]
-                )
-                row[f"cv_{metric}_std"] = (
-                    results.loc[
-                        best_index,
-                        f"std_test_{metric}",
-                    ]
-                )
+                row[f"cv_{metric}_mean"] = results.loc[
+                    best_index,
+                    f"mean_test_{metric}",
+                ]
+                row[f"cv_{metric}_std"] = results.loc[
+                    best_index,
+                    f"std_test_{metric}",
+                ]
 
             row["mean_fit_time"] = results.loc[
                 best_index,
@@ -1200,9 +1068,7 @@ class ClassificationAnalysis:
 
             self.search_summaries.append(row)
 
-            selected = clone(pipeline).set_params(
-                **search.best_params_
-            )
+            selected = clone(pipeline).set_params(**search.best_params_)
 
             fold_scores = cross_validate(
                 selected,
@@ -1224,26 +1090,17 @@ class ClassificationAnalysis:
                         "Selected-configuration tuning-CV "
                         "score; not a nested-CV estimate"
                     ),
-                    "fit_time": fold_scores[
-                        "fit_time"
-                    ][fold_index],
-                    "score_time": fold_scores[
-                        "score_time"
-                    ][fold_index],
+                    "fit_time": fold_scores["fit_time"][fold_index],
+                    "score_time": fold_scores["score_time"][fold_index],
                 }
 
                 for metric in self.SCORING:
-                    fold_row[metric] = fold_scores[
-                        f"test_{metric}"
-                    ][fold_index]
+                    fold_row[metric] = fold_scores[f"test_{metric}"][fold_index]
 
                 fold_rows.append(fold_row)
 
             pd.DataFrame(fold_rows).to_csv(
-                self.path(
-                    "selected_configuration_"
-                    f"training_cv_{slug}.csv"
-                ),
+                self.path(f"selected_configuration_training_cv_{slug}.csv"),
                 index=False,
             )
 
@@ -1265,8 +1122,7 @@ class ClassificationAnalysis:
         std_column = f"std_test_{metric}"
 
         ordered = (
-            results
-            .reset_index(names="original_index")
+            results.reset_index(names="original_index")
             .sort_values(rank_column)
             .reset_index(drop=True)
         )
@@ -1291,12 +1147,8 @@ class ClassificationAnalysis:
         if metric != "balanced_accuracy":
             plt.errorbar(
                 x,
-                ordered[
-                    "mean_test_balanced_accuracy"
-                ],
-                yerr=ordered[
-                    "std_test_balanced_accuracy"
-                ],
+                ordered["mean_test_balanced_accuracy"],
+                yerr=ordered["std_test_balanced_accuracy"],
                 marker="s",
                 capsize=3,
                 label="Balanced Accuracy",
@@ -1314,29 +1166,20 @@ class ClassificationAnalysis:
             )
 
         plt.xlabel(
-            "Hyperparameter configuration ordered by "
-            f"{metric.replace('_', ' ')} rank"
+            f"Hyperparameter configuration ordered by {metric.replace('_', ' ')} rank"
         )
         plt.ylabel("Cross-validated score")
         plt.ylim(0, 1)
         plt.grid(alpha=0.3)
         plt.legend()
-        plt.title(
-            f"Hyperparameter Search: {name}"
-        )
+        plt.title(f"Hyperparameter Search: {name}")
 
-        self.savefig(
-            f"hyperparameter_search_{self.slug(name)}.png"
-        )
+        self.savefig(f"hyperparameter_search_{self.slug(name)}.png")
 
     def evaluate_untouched_holdout(self) -> None:
-        self.heading(
-            "8. Evaluating untouched chronological holdout"
-        )
+        self.heading("8. Evaluating untouched chronological holdout")
 
-        X_train, X_test, y_train, y_test = (
-            self.split_data()
-        )
+        X_train, X_test, y_train, y_test = self.split_data()
 
         for name, pipeline in self.models.items():
             model = (
@@ -1351,10 +1194,14 @@ class ClassificationAnalysis:
             pred = model.predict(X_test)
             proba = model.predict_proba(X_test)
 
-            model_classes = list(
-                model.named_steps[
-                    "classifier"
-                ].classes_
+            model_classes = list(model.named_steps["classifier"].classes_)
+
+            macro_recall = recall_score(
+                y_test,
+                pred,
+                labels=self.classes,
+                average="macro",
+                zero_division=0,
             )
 
             metrics = {
@@ -1363,12 +1210,7 @@ class ClassificationAnalysis:
                     y_test,
                     pred,
                 ),
-                "balanced_accuracy": (
-                    balanced_accuracy_score(
-                        y_test,
-                        pred,
-                    )
-                ),
+                "balanced_accuracy": macro_recall,
                 "macro_precision": precision_score(
                     y_test,
                     pred,
@@ -1376,13 +1218,7 @@ class ClassificationAnalysis:
                     average="macro",
                     zero_division=0,
                 ),
-                "macro_recall": recall_score(
-                    y_test,
-                    pred,
-                    labels=self.classes,
-                    average="macro",
-                    zero_division=0,
-                ),
+                "macro_recall": macro_recall,
                 "macro_f1": f1_score(
                     y_test,
                     pred,
@@ -1425,20 +1261,14 @@ class ClassificationAnalysis:
             )
 
             pd.DataFrame(report).T.to_csv(
-                self.path(
-                    f"holdout_report_{slug}.csv"
-                ),
+                self.path(f"holdout_report_{slug}.csv"),
                 index_label="class_or_average",
             )
 
             if self.test_indices is None:
-                raise RuntimeError(
-                    "Chronological test indices are missing"
-                )
+                raise RuntimeError("Chronological test indices are missing")
 
-            out = self.data.iloc[
-                self.test_indices
-            ][
+            out = self.data.iloc[self.test_indices][
                 [
                     "Sequence",
                     *self.cfg.features,
@@ -1447,47 +1277,30 @@ class ClassificationAnalysis:
             ].copy()
 
             out["Predicted_Y"] = pred
-            out["Correct"] = (
-                out[self.cfg.target].to_numpy()
-                == pred
-            )
+            out["Correct"] = out[self.cfg.target].to_numpy() == pred
 
             sorted_proba = np.sort(
                 proba,
                 axis=1,
             )
 
-            out["Prediction_Confidence"] = (
-                sorted_proba[:, -1]
-            )
+            out["Prediction_Confidence"] = sorted_proba[:, -1]
 
             if sorted_proba.shape[1] >= 2:
-                out["Prediction_Margin"] = (
-                    sorted_proba[:, -1]
-                    - sorted_proba[:, -2]
-                )
+                out["Prediction_Margin"] = sorted_proba[:, -1] - sorted_proba[:, -2]
             else:
                 out["Prediction_Margin"] = np.nan
 
-            for column_index, label in enumerate(
-                model_classes
-            ):
-                out[f"Probability_{label}"] = (
-                    proba[:, column_index]
-                )
+            for column_index, label in enumerate(model_classes):
+                out[f"Probability_{label}"] = proba[:, column_index]
 
             out.to_csv(
-                self.path(
-                    f"holdout_predictions_{slug}.csv"
-                ),
+                self.path(f"holdout_predictions_{slug}.csv"),
                 index=False,
             )
 
             out.loc[~out["Correct"]].to_csv(
-                self.path(
-                    "holdout_misclassifications_"
-                    f"{slug}.csv"
-                ),
+                self.path(f"holdout_misclassifications_{slug}.csv"),
                 index=False,
             )
 
@@ -1509,24 +1322,17 @@ class ClassificationAnalysis:
                 name=name,
             )
 
-        holdout = (
-            pd.DataFrame(self.holdout_rows)
-            .sort_values(
-                self.cfg.selection_metric,
-                ascending=False,
-            )
+        holdout = pd.DataFrame(self.holdout_rows).sort_values(
+            self.cfg.selection_metric,
+            ascending=False,
         )
 
         holdout.to_csv(
-            self.path(
-                "chronological_holdout_metrics.csv"
-            ),
+            self.path("chronological_holdout_metrics.csv"),
             index=False,
         )
 
-        cv_summary = pd.DataFrame(
-            self.search_summaries
-        )
+        cv_summary = pd.DataFrame(self.search_summaries)
 
         comparison = cv_summary.merge(
             holdout,
@@ -1534,18 +1340,11 @@ class ClassificationAnalysis:
             suffixes=("_cv", "_holdout"),
         )
 
-        holdout_metric_column = (
-            self.cfg.selection_metric
-        )
-        cv_metric_column = (
-            f"cv_{self.cfg.selection_metric}_mean"
-        )
+        holdout_metric_column = self.cfg.selection_metric
+        cv_metric_column = f"cv_{self.cfg.selection_metric}_mean"
 
-        comparison[
-            f"cv_holdout_{self.cfg.selection_metric}_gap"
-        ] = (
-            comparison[cv_metric_column]
-            - comparison[holdout_metric_column]
+        comparison[f"cv_holdout_{self.cfg.selection_metric}_gap"] = (
+            comparison[cv_metric_column] - comparison[holdout_metric_column]
         )
 
         comparison.sort_values(
@@ -1568,28 +1367,17 @@ class ClassificationAnalysis:
         artifact = {
             "model": model,
             "model_type": name,
-            "model_role": (
-                "chronological_training_evaluation_model"
-            ),
+            "model_role": ("chronological_training_evaluation_model"),
             "features": list(self.cfg.features),
             "reporting_class_order": self.classes,
-            "estimator_class_order": list(
-                classifier.classes_
-            ),
-            "selection_metric": (
-                self.cfg.selection_metric
-            ),
-            "best_parameters": (
-                self.best_params[name]
-            ),
+            "estimator_class_order": list(classifier.classes_),
+            "selection_metric": (self.cfg.selection_metric),
+            "best_parameters": (self.best_params[name]),
         }
 
         joblib.dump(
             artifact,
-            self.path(
-                "evaluation_"
-                f"{self.slug(name)}.joblib"
-            ),
+            self.path(f"evaluation_{self.slug(name)}.joblib"),
             compress=3,
         )
 
@@ -1614,38 +1402,22 @@ class ClassificationAnalysis:
             normalize="true",
         )
 
-        index = [
-            f"Actual_{label}"
-            for label in self.classes
-        ]
-        columns = [
-            f"Predicted_{label}"
-            for label in self.classes
-        ]
+        index = [f"Actual_{label}" for label in self.classes]
+        columns = [f"Predicted_{label}" for label in self.classes]
 
         pd.DataFrame(
             matrix,
             index=index,
             columns=columns,
-        ).to_csv(
-            self.path(
-                "holdout_confusion_matrix_"
-                f"{slug}.csv"
-            )
-        )
+        ).to_csv(self.path(f"holdout_confusion_matrix_{slug}.csv"))
 
         pd.DataFrame(
             normalized,
             index=index,
             columns=columns,
-        ).to_csv(
-            self.path(
-                "holdout_confusion_matrix_"
-                f"normalized_{slug}.csv"
-            )
-        )
+        ).to_csv(self.path(f"holdout_confusion_matrix_normalized_{slug}.csv"))
 
-        fig, axes = plt.subplots(
+        _fig, axes = plt.subplots(
             1,
             2,
             figsize=(13, 5),
@@ -1661,9 +1433,7 @@ class ClassificationAnalysis:
             ax=axes[0],
         )
 
-        axes[0].set_title(
-            f"{name}\nCounts"
-        )
+        axes[0].set_title(f"{name}\nCounts")
 
         ConfusionMatrixDisplay.from_predictions(
             y_true,
@@ -1676,13 +1446,9 @@ class ClassificationAnalysis:
             ax=axes[1],
         )
 
-        axes[1].set_title(
-            f"{name}\nRecall-Normalized"
-        )
+        axes[1].set_title(f"{name}\nRecall-Normalized")
 
-        self.savefig(
-            f"holdout_confusion_matrix_{slug}.png"
-        )
+        self.savefig(f"holdout_confusion_matrix_{slug}.png")
 
     def plot_prediction_diagnostics(
         self,
@@ -1717,20 +1483,13 @@ class ClassificationAnalysis:
                 label="Incorrect",
             )
 
-        plt.xlabel(
-            "Maximum predicted probability"
-        )
+        plt.xlabel("Maximum predicted probability")
         plt.ylabel("Observations")
-        plt.title(
-            f"Prediction Confidence: {name}"
-        )
+        plt.title(f"Prediction Confidence: {name}")
         plt.grid(alpha=0.3)
         plt.legend()
 
-        self.savefig(
-            "holdout_prediction_confidence_"
-            f"{slug}.png"
-        )
+        self.savefig(f"holdout_prediction_confidence_{slug}.png")
 
         plt.figure(figsize=(12, 4))
 
@@ -1747,14 +1506,10 @@ class ClassificationAnalysis:
 
         plt.xlabel("Observation Sequence")
         plt.ylabel("Prediction Confidence")
-        plt.title(
-            f"Holdout Predictions by Sequence: {name}"
-        )
+        plt.title(f"Holdout Predictions by Sequence: {name}")
         plt.grid(alpha=0.3)
 
-        self.savefig(
-            f"holdout_errors_by_sequence_{slug}.png"
-        )
+        self.savefig(f"holdout_errors_by_sequence_{slug}.png")
 
     def holdout_importance(
         self,
@@ -1777,15 +1532,9 @@ class ClassificationAnalysis:
             {
                 "model": name,
                 "feature": self.cfg.features,
-                "importance_mean": (
-                    result.importances_mean
-                ),
-                "importance_std": (
-                    result.importances_std
-                ),
-                "interpretation_partition": (
-                    "chronological_holdout"
-                ),
+                "importance_mean": (result.importances_mean),
+                "importance_std": (result.importances_std),
+                "interpretation_partition": ("chronological_holdout"),
             }
         ).sort_values(
             "importance_mean",
@@ -1795,16 +1544,11 @@ class ClassificationAnalysis:
         slug = self.slug(name)
 
         importance.to_csv(
-            self.path(
-                "holdout_permutation_importance_"
-                f"{slug}.csv"
-            ),
+            self.path(f"holdout_permutation_importance_{slug}.csv"),
             index=False,
         )
 
-        plot_data = importance.sort_values(
-            "importance_mean"
-        )
+        plot_data = importance.sort_values("importance_mean")
 
         plt.figure(figsize=(9, 6))
 
@@ -1822,19 +1566,11 @@ class ClassificationAnalysis:
             linewidth=0.8,
         )
 
-        plt.xlabel(
-            "Decrease in holdout macro F1 "
-            "after permutation"
-        )
-        plt.title(
-            f"Holdout Permutation Importance: {name}"
-        )
+        plt.xlabel("Decrease in holdout macro F1 after permutation")
+        plt.title(f"Holdout Permutation Importance: {name}")
         plt.grid(axis="x", alpha=0.3)
 
-        self.savefig(
-            "holdout_permutation_importance_"
-            f"{slug}.png"
-        )
+        self.savefig(f"holdout_permutation_importance_{slug}.png")
 
     def plot_model_comparison(
         self,
@@ -1850,17 +1586,14 @@ class ClassificationAnalysis:
         y = np.arange(len(plot))
         height = 0.35
 
-        fig, ax = plt.subplots(figsize=(11, 6))
+        _fig, ax = plt.subplots(figsize=(11, 6))
 
         ax.barh(
             y - height / 2,
             plot[cv_column],
             height,
             xerr=plot[cv_std_column],
-            label=(
-                "Training-partition tuning CV "
-                f"{metric.replace('_', ' ').title()}"
-            ),
+            label=(f"Training-partition tuning CV {metric.replace('_', ' ').title()}"),
             color="steelblue",
         )
 
@@ -1868,10 +1601,7 @@ class ClassificationAnalysis:
             y + height / 2,
             plot[holdout_column],
             height,
-            label=(
-                "Chronological holdout "
-                f"{metric.replace('_', ' ').title()}"
-            ),
+            label=(f"Chronological holdout {metric.replace('_', ' ').title()}"),
             color="darkorange",
         )
 
@@ -1881,9 +1611,7 @@ class ClassificationAnalysis:
         )
         ax.set_xlim(0, 1)
         ax.set_xlabel("Score")
-        ax.set_title(
-            "Model Comparison"
-        )
+        ax.set_title("Model Comparison")
         ax.grid(axis="x", alpha=0.3)
         ax.legend()
 
@@ -1896,13 +1624,9 @@ class ClassificationAnalysis:
         model_role: str,
         create_plot: bool = False,
     ) -> None:
-        classifier = pipeline.named_steps[
-            "classifier"
-        ]
+        classifier = pipeline.named_steps["classifier"]
 
-        numeric = pipeline.named_steps[
-            "preprocessor"
-        ].named_transformers_["numeric"]
+        numeric = pipeline.named_steps["preprocessor"].named_transformers_["numeric"]
 
         imputer = numeric.named_steps["imputer"]
         scaler = numeric.named_steps["scaler"]
@@ -1910,19 +1634,14 @@ class ClassificationAnalysis:
         preprocessing = pd.DataFrame(
             {
                 "feature": self.cfg.features,
-                "imputation_median": (
-                    imputer.statistics_
-                ),
+                "imputation_median": (imputer.statistics_),
                 "scaler_mean": scaler.mean_,
                 "scaler_scale": scaler.scale_,
             }
         )
 
         preprocessing.to_csv(
-            self.path(
-                f"{prefix}_logistic_"
-                "preprocessing_parameters.csv"
-            ),
+            self.path(f"{prefix}_logistic_preprocessing_parameters.csv"),
             index=False,
         )
 
@@ -1931,23 +1650,15 @@ class ClassificationAnalysis:
         intercepts = classifier.intercept_
 
         if len(classes) == 2:
-            equation_labels = [
-                f"{classes[1]} relative to {classes[0]}"
-            ]
+            equation_labels = [f"{classes[1]} relative to {classes[0]}"]
         else:
             equation_labels = classes
 
-        standardized_rows: list[
-            dict[str, Any]
-        ] = []
+        standardized_rows: list[dict[str, Any]] = []
 
-        original_rows: list[
-            dict[str, Any]
-        ] = []
+        original_rows: list[dict[str, Any]] = []
 
-        for index, label in enumerate(
-            equation_labels
-        ):
+        for index, label in enumerate(equation_labels):
             standardized_rows.append(
                 {
                     "equation_for": label,
@@ -1961,26 +1672,16 @@ class ClassificationAnalysis:
                 }
             )
 
-            beta_original = (
-                coefficients[index]
-                / scaler.scale_
-            )
+            beta_original = coefficients[index] / scaler.scale_
 
-            beta0_original = (
-                intercepts[index]
-                - np.sum(
-                    coefficients[index]
-                    * scaler.mean_
-                    / scaler.scale_
-                )
+            beta0_original = intercepts[index] - np.sum(
+                coefficients[index] * scaler.mean_ / scaler.scale_
             )
 
             original_rows.append(
                 {
                     "equation_for": label,
-                    "beta_0_original_units": (
-                        beta0_original
-                    ),
+                    "beta_0_original_units": (beta0_original),
                     **dict(
                         zip(
                             self.cfg.features,
@@ -1990,23 +1691,15 @@ class ClassificationAnalysis:
                 }
             )
 
-        standardized_frame = pd.DataFrame(
-            standardized_rows
-        )
+        standardized_frame = pd.DataFrame(standardized_rows)
 
         standardized_frame.to_csv(
-            self.path(
-                f"{prefix}_logistic_"
-                "coefficients_and_intercepts.csv"
-            ),
+            self.path(f"{prefix}_logistic_coefficients_and_intercepts.csv"),
             index=False,
         )
 
         pd.DataFrame(original_rows).to_csv(
-            self.path(
-                f"{prefix}_logistic_"
-                "coefficients_original_units.csv"
-            ),
+            self.path(f"{prefix}_logistic_coefficients_original_units.csv"),
             index=False,
         )
 
@@ -2016,17 +1709,10 @@ class ClassificationAnalysis:
             "reporting_class_order": self.classes,
             "estimator_class_order": classes,
             "binary": len(classes) == 2,
-            "standardized_equation": (
-                "eta_k = beta_0_k + "
-                "sum(beta_kj * z_j)"
-            ),
-            "standardization": (
-                "z_j = (imputed_x_j - "
-                "scaler_mean_j) / scaler_scale_j"
-            ),
+            "standardized_equation": ("eta_k = beta_0_k + sum(beta_kj * z_j)"),
+            "standardization": ("z_j = (imputed_x_j - scaler_mean_j) / scaler_scale_j"),
             "original_units_equation": (
-                "eta_k = beta_0_original_k + "
-                "sum(beta_original_kj * imputed_x_j)"
+                "eta_k = beta_0_original_k + sum(beta_original_kj * imputed_x_j)"
             ),
             "missing_value_rule": (
                 "Before using either equation, replace "
@@ -2034,12 +1720,10 @@ class ClassificationAnalysis:
                 "imputation median."
             ),
             "binary_probability": (
-                "P(classes[1]) = sigmoid(eta); "
-                "P(classes[0]) = 1 - sigmoid(eta)"
+                "P(classes[1]) = sigmoid(eta); P(classes[0]) = 1 - sigmoid(eta)"
             ),
             "multiclass_probability": (
-                "P(k) = exp(eta_k - max(eta)) / "
-                "sum_l exp(eta_l - max(eta))"
+                "P(k) = exp(eta_k - max(eta)) / sum_l exp(eta_l - max(eta))"
             ),
             "recommended_usage": (
                 "Use the exported joblib pipeline to "
@@ -2049,9 +1733,7 @@ class ClassificationAnalysis:
             ),
         }
 
-        with self.path(
-            f"{prefix}_logistic_equation_usage.json"
-        ).open(
+        with self.path(f"{prefix}_logistic_equation_usage.json").open(
             "w",
             encoding="utf-8",
         ) as file:
@@ -2064,30 +1746,21 @@ class ClassificationAnalysis:
 
         if create_plot:
             self.plot_logistic_coefficients(
-                standardized_frame.set_index(
-                    "equation_for"
-                ),
+                standardized_frame.set_index("equation_for"),
                 prefix=prefix,
             )
 
     def export_evaluation_logistic_outputs(
         self,
     ) -> None:
-        self.heading(
-            "9. Evaluation logistic equations "
-            "and preprocessing"
-        )
+        self.heading("9. Evaluation logistic equations and preprocessing")
 
-        pipeline = self.evaluation_models[
-            "Logistic Regression"
-        ]
+        pipeline = self.evaluation_models["Logistic Regression"]
 
         self.export_logistic_parameters(
             pipeline=pipeline,
             prefix="evaluation",
-            model_role=(
-                "chronological_training_evaluation_model"
-            ),
+            model_role=("chronological_training_evaluation_model"),
             create_plot=True,
         )
 
@@ -2096,22 +1769,12 @@ class ClassificationAnalysis:
         frame: pd.DataFrame,
         prefix: str,
     ) -> None:
-        coefficients = frame.drop(
-            columns="beta_0"
-        )
+        coefficients = frame.drop(columns="beta_0")
 
         if len(coefficients) == 1:
-            values = (
-                coefficients.iloc[0]
-                .sort_values()
-            )
+            values = coefficients.iloc[0].sort_values()
 
-            colors = [
-                "darkorange"
-                if value < 0
-                else "steelblue"
-                for value in values
-            ]
+            colors = ["darkorange" if value < 0 else "steelblue" for value in values]
 
             plt.figure(figsize=(9, 6))
 
@@ -2127,21 +1790,12 @@ class ClassificationAnalysis:
                 linewidth=0.8,
             )
 
-            plt.xlabel(
-                "Standardized coefficient"
-            )
+            plt.xlabel("Standardized coefficient")
 
-            plt.title(
-                "Logistic Coefficients: "
-                f"{coefficients.index[0]}"
-            )
+            plt.title(f"Logistic Coefficients: {coefficients.index[0]}")
         else:
             limit = max(
-                float(
-                    np.abs(
-                        coefficients.to_numpy()
-                    ).max()
-                ),
+                float(np.abs(coefficients.to_numpy()).max()),
                 1e-12,
             )
 
@@ -2181,27 +1835,19 @@ class ClassificationAnalysis:
                 label="Standardized coefficient",
             )
 
-            ax.set_title(
-                "Multiclass Logistic Coefficients"
-            )
+            ax.set_title("Multiclass Logistic Coefficients")
 
-        self.savefig(
-            f"{prefix}_logistic_coefficients.png"
-        )
+        self.savefig(f"{prefix}_logistic_coefficients.png")
 
     def refit_and_export_production_models(
         self,
     ) -> None:
-        self.heading(
-            "10. Refitting production models on all data"
-        )
+        self.heading("10. Refitting production models on all data")
 
         X = self.data[list(self.cfg.features)]
         y = self.data[self.cfg.target]
 
-        cv_summary = pd.DataFrame(
-            self.search_summaries
-        )
+        cv_summary = pd.DataFrame(self.search_summaries)
 
         overall_name = str(
             cv_summary.sort_values(
@@ -2213,43 +1859,23 @@ class ClassificationAnalysis:
         manifest: list[dict[str, Any]] = []
 
         for name, pipeline in self.models.items():
-            production = (
-                clone(pipeline)
-                .set_params(**self.best_params[name])
-                .fit(X, y)
-            )
+            production = clone(pipeline).set_params(**self.best_params[name]).fit(X, y)
 
-            self.production_models[name] = (
-                production
-            )
+            self.production_models[name] = production
 
-            filename = (
-                f"production_{self.slug(name)}.joblib"
-            )
+            filename = f"production_{self.slug(name)}.joblib"
 
-            estimator_classes = list(
-                production.named_steps[
-                    "classifier"
-                ].classes_
-            )
+            estimator_classes = list(production.named_steps["classifier"].classes_)
 
             artifact = {
                 "model": production,
                 "model_type": name,
-                "model_role": (
-                    "production_full_data_refit"
-                ),
+                "model_role": ("production_full_data_refit"),
                 "features": list(self.cfg.features),
                 "reporting_class_order": self.classes,
-                "estimator_class_order": (
-                    estimator_classes
-                ),
-                "selection_metric": (
-                    self.cfg.selection_metric
-                ),
-                "best_parameters": (
-                    self.best_params[name]
-                ),
+                "estimator_class_order": (estimator_classes),
+                "selection_metric": (self.cfg.selection_metric),
+                "best_parameters": (self.best_params[name]),
             }
 
             joblib.dump(
@@ -2258,39 +1884,19 @@ class ClassificationAnalysis:
                 compress=3,
             )
 
-            cv_row = cv_summary.loc[
-                cv_summary["model"] == name
-            ].iloc[0]
+            cv_row = cv_summary.loc[cv_summary["model"] == name].iloc[0]
 
             manifest.append(
                 {
                     "model_type": name,
                     "filename": filename,
-                    "model_role": (
-                        "production_full_data_refit"
-                    ),
-                    "selection_metric": (
-                        self.cfg.selection_metric
-                    ),
-                    "selection_score_mean": (
-                        cv_row[
-                            self.selection_mean_column
-                        ]
-                    ),
-                    "selection_score_std": (
-                        cv_row[
-                            self.selection_std_column
-                        ]
-                    ),
-                    "reporting_class_order": (
-                        json.dumps(self.classes)
-                    ),
-                    "estimator_class_order": (
-                        json.dumps(estimator_classes)
-                    ),
-                    "feature_count": len(
-                        self.cfg.features
-                    ),
+                    "model_role": ("production_full_data_refit"),
+                    "selection_metric": (self.cfg.selection_metric),
+                    "selection_score_mean": (cv_row[self.selection_mean_column]),
+                    "selection_score_std": (cv_row[self.selection_std_column]),
+                    "reporting_class_order": (json.dumps(self.classes)),
+                    "estimator_class_order": (json.dumps(estimator_classes)),
+                    "feature_count": len(self.cfg.features),
                     "best_parameters": json.dumps(
                         self.best_params[name],
                         sort_keys=True,
@@ -2298,34 +1904,19 @@ class ClassificationAnalysis:
                 }
             )
 
-        overall_model = self.production_models[
-            overall_name
-        ]
+        overall_model = self.production_models[overall_name]
 
-        overall_classes = list(
-            overall_model.named_steps[
-                "classifier"
-            ].classes_
-        )
+        overall_classes = list(overall_model.named_steps["classifier"].classes_)
 
         overall_artifact = {
             "model": overall_model,
             "model_type": overall_name,
-            "model_role": (
-                "best_overall_production_"
-                "full_data_refit"
-            ),
+            "model_role": ("best_overall_production_full_data_refit"),
             "features": list(self.cfg.features),
             "reporting_class_order": self.classes,
-            "estimator_class_order": (
-                overall_classes
-            ),
-            "selection_metric": (
-                self.cfg.selection_metric
-            ),
-            "best_parameters": (
-                self.best_params[overall_name]
-            ),
+            "estimator_class_order": (overall_classes),
+            "selection_metric": (self.cfg.selection_metric),
+            "best_parameters": (self.best_params[overall_name]),
         }
 
         joblib.dump(
@@ -2340,39 +1931,25 @@ class ClassificationAnalysis:
         )
 
         self.export_logistic_parameters(
-            pipeline=self.production_models[
-                "Logistic Regression"
-            ],
+            pipeline=self.production_models["Logistic Regression"],
             prefix="production",
-            model_role=(
-                "production_full_data_refit"
-            ),
+            model_role=("production_full_data_refit"),
             create_plot=True,
         )
 
     def metadata(self) -> None:
         configuration = asdict(self.cfg)
 
-        configuration["data"] = str(
-            self.cfg.data.resolve()
-        )
-        configuration["output"] = str(
-            self.cfg.output.resolve()
-        )
-        configuration["features"] = list(
-            self.cfg.features
-        )
+        configuration["data"] = str(self.cfg.data.resolve())
+        configuration["output"] = str(self.cfg.output.resolve())
+        configuration["features"] = list(self.cfg.features)
         configuration["class_order"] = (
-            list(self.cfg.class_order)
-            if self.cfg.class_order
-            else None
+            list(self.cfg.class_order) if self.cfg.class_order else None
         )
 
         payload = {
             "configuration": configuration,
-            "observed_reporting_class_order": (
-                self.classes
-            ),
+            "observed_reporting_class_order": (self.classes),
             "validation_design": (
                 "A chronological holdout is created "
                 "before tuning. Grid search and all "
@@ -2396,6 +1973,11 @@ class ClassificationAnalysis:
                 "holdout and should be treated as holdout "
                 "interpretation, not independent training data."
             ),
+            "balanced_accuracy_definition": (
+                "Macro recall over the complete observed reporting class order. "
+                "A reporting class absent from the chronological holdout "
+                "contributes zero recall."
+            ),
             "production_design": (
                 "Selected configurations are refitted on "
                 "all available data only after holdout "
@@ -2408,9 +1990,7 @@ class ClassificationAnalysis:
             "scikit_learn": sklearn.__version__,
         }
 
-        with self.path(
-            "run_metadata.json"
-        ).open(
+        with self.path("run_metadata.json").open(
             "w",
             encoding="utf-8",
         ) as file:
@@ -2426,13 +2006,9 @@ class ClassificationAnalysis:
     ) -> None:
         manifest_name = "generated_files.txt"
 
-        files = sorted(
-            self.generated_files | {manifest_name}
-        )
+        files = sorted(self.generated_files | {manifest_name})
 
-        manifest_path = (
-            self.cfg.output / manifest_name
-        )
+        manifest_path = self.cfg.output / manifest_name
 
         manifest_path.write_text(
             "\n".join(files) + "\n",
@@ -2457,18 +2033,12 @@ class ClassificationAnalysis:
 
         self.heading("Analysis completed")
 
-        print(
-            f"Results saved to: "
-            f"{self.cfg.output.resolve()}"
-        )
+        print(f"Results saved to: {self.cfg.output.resolve()}")
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description=(
-            "viClassify: binary or multiclass "
-            "tabular classification"
-        )
+        description=("viClassify: binary or multiclass tabular classification")
     )
 
     parser.add_argument(
@@ -2494,10 +2064,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--features",
         nargs="+",
-        default=[
-            f"X{index}"
-            for index in range(1, 8)
-        ],
+        default=[f"X{index}" for index in range(1, 8)],
         help="Ordered predictor-column names",
     )
 
@@ -2576,43 +2143,22 @@ def parse_args() -> argparse.Namespace:
     args = parser.parse_args()
 
     args.target = args.target.strip()
-    args.features = [
-        feature.strip()
-        for feature in args.features
-    ]
+    args.features = [feature.strip() for feature in args.features]
 
     if args.class_order:
-        args.class_order = [
-            label.strip()
-            for label in args.class_order
-        ]
+        args.class_order = [label.strip() for label in args.class_order]
 
     if not args.target:
-        parser.error(
-            "--target must not be empty"
-        )
+        parser.error("--target must not be empty")
 
     if not args.features:
-        parser.error(
-            "--features must contain at least one feature"
-        )
+        parser.error("--features must contain at least one feature")
 
-    if any(
-        not feature
-        for feature in args.features
-    ):
-        parser.error(
-            "--features must not contain empty names"
-        )
+    if any(not feature for feature in args.features):
+        parser.error("--features must not contain empty names")
 
-    if (
-        len(set(args.features))
-        != len(args.features)
-    ):
-        parser.error(
-            "--features must not contain duplicate "
-            "column names"
-        )
+    if len(set(args.features)) != len(args.features):
+        parser.error("--features must not contain duplicate column names")
 
     if args.target in args.features:
         parser.error(
@@ -2621,60 +2167,29 @@ def parse_args() -> argparse.Namespace:
         )
 
     if args.class_order:
-        if any(
-            not label
-            for label in args.class_order
-        ):
-            parser.error(
-                "--class-order must not contain "
-                "empty labels"
-            )
+        if any(not label for label in args.class_order):
+            parser.error("--class-order must not contain empty labels")
 
-        if (
-            len(set(args.class_order))
-            != len(args.class_order)
-        ):
-            parser.error(
-                "--class-order must not contain "
-                "duplicate labels"
-            )
+        if len(set(args.class_order)) != len(args.class_order):
+            parser.error("--class-order must not contain duplicate labels")
 
     if not 0 < args.test_fraction < 1:
-        parser.error(
-            "--test-fraction must be between 0 and 1"
-        )
+        parser.error("--test-fraction must be between 0 and 1")
 
     if args.cv_folds < 2:
-        parser.error(
-            "--cv-folds must be at least 2"
-        )
+        parser.error("--cv-folds must be at least 2")
 
-    if (
-        args.n_jobs == 0
-        or args.n_jobs < -1
-    ):
-        parser.error(
-            "--n-jobs must be -1 or a positive integer"
-        )
+    if args.n_jobs == 0 or args.n_jobs < -1:
+        parser.error("--n-jobs must be -1 or a positive integer")
 
     if args.permutation_repeats < 1:
-        parser.error(
-            "--permutation-repeats must be positive"
-        )
+        parser.error("--permutation-repeats must be positive")
 
     if args.dpi < 50:
-        parser.error(
-            "--dpi must be at least 50"
-        )
+        parser.error("--dpi must be at least 50")
 
-    if not (
-        0
-        < args.near_constant_threshold
-        <= 1
-    ):
-        parser.error(
-            "--near-constant-threshold must be in (0, 1]"
-        )
+    if not (0 < args.near_constant_threshold <= 1):
+        parser.error("--near-constant-threshold must be in (0, 1]")
 
     return args
 
@@ -2687,25 +2202,15 @@ def main() -> None:
         output=args.output,
         target=args.target,
         features=tuple(args.features),
-        class_order=(
-            tuple(args.class_order)
-            if args.class_order
-            else None
-        ),
+        class_order=(tuple(args.class_order) if args.class_order else None),
         test_fraction=args.test_fraction,
         cv_folds=args.cv_folds,
         random_state=args.random_state,
         n_jobs=args.n_jobs,
-        permutation_repeats=(
-            args.permutation_repeats
-        ),
+        permutation_repeats=(args.permutation_repeats),
         dpi=args.dpi,
-        near_constant_threshold=(
-            args.near_constant_threshold
-        ),
-        selection_metric=(
-            args.selection_metric
-        ),
+        near_constant_threshold=(args.near_constant_threshold),
+        selection_metric=(args.selection_metric),
     )
 
     ClassificationAnalysis(cfg).run()
