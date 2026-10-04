@@ -241,7 +241,7 @@ python viclassify_cli.py \
 | `--permutation-repeats` | No | `20` | Number of holdout permutations per feature and model. Must be positive. |
 | `--dpi` | No | `150` | Plot resolution. Must be at least 50. |
 | `--near-constant-threshold` | No | `0.99` | A feature is flagged when its most common nonmissing value has at least this fraction. Must be in `(0, 1]`. |
-| `--selection-metric` | No | `macro_f1` | Metric used by `GridSearchCV` for refitting and for selecting the best overall production family. Choices: `accuracy`, `balanced_accuracy`, `macro_precision`, `macro_recall`, `macro_f1`, `weighted_f1`. |
+| `--selection-metric` | No | `macro_f1` | Metric used by `GridSearchCV` for refitting and for selecting the CV-selected production model family. Choices: `accuracy`, `balanced_accuracy`, `macro_precision`, `macro_recall`, `macro_f1`, `weighted_f1`. |
 
 ## End-to-end workflow
 
@@ -284,7 +284,7 @@ python viclassify_cli.py \
 
 10. **Refit production models on all data**
     - Fit every selected family configuration on all rows.
-    - Export every production pipeline and the best overall production pipeline.
+    - Export every production pipeline and the CV-selected production model pipeline (`cv_selected_production_model.joblib`).
     - Export production Logistic Regression parameters.
 
 11. **Record metadata and generated files**
@@ -477,7 +477,21 @@ Every hyperparameter candidate is assessed using:
 - Macro F1
 - Weighted F1
 
-`GridSearchCV` refits the candidate maximizing `--selection-metric`. The same CV selection score determines the best overall production family. Holdout performance is reported for external comparison but is not used to choose the production family, preventing direct holdout-driven model selection.
+`GridSearchCV` refits the candidate maximizing `--selection-metric`. The same CV selection score determines the CV-selected production model family. Holdout performance is reported for external comparison but is not used to choose the production family, preventing direct holdout-driven model selection.
+
+### CV-selected production model
+
+`cv_selected_production_model.joblib` contains the production pipeline from the model family ranked first by the configured selection metric in non-nested cross-validation performed within the chronological training partition. The selected configuration is subsequently refitted on all available rows. The chronological holdout is used for evaluation and is not used for the scripted family-selection decision.
+
+1. The chronological holdout is created before tuning.
+2. Hyperparameters are selected using stratified shuffled K-fold CV inside the chronological training partition.
+3. Model families are ranked using the configured selection metric from that same training-partition tuning design under a deterministic tie-breaking rule (higher mean selection score, lower standard deviation, lower mean fit time, then alphabetical model name).
+4. The highest-ranked family is designated the CV-selected production family.
+5. That selected family is refitted on all available rows.
+6. The resulting pipeline is exported as `cv_selected_production_model.joblib`.
+7. Chronological holdout performance is reported for evaluation but is not used for automatic family selection.
+8. The tuning-CV score is not a nested-CV generalization estimate.
+9. The word “selected” does not imply universal superiority under different datasets, future distributions, costs, calibration requirements, or operational objectives.
 
 The exported `selected_configuration_training_cv_*.csv` files re-evaluate the already selected configuration on the same CV design. These are useful fold-level diagnostics, but they are **not nested-CV generalization estimates** because selection and reporting reuse the same training-partition validation design.
 
@@ -720,11 +734,11 @@ production_logistic_regression.joblib
 production_random_forest.joblib
 production_extra_trees.joblib
 production_histogram_gradient_boosting.joblib
-best_overall_model.joblib
+cv_selected_production_model.joblib
 model_export_manifest.csv
 ```
 
-Every production model is refitted on all available rows using the hyperparameters selected from chronological training CV. `best_overall_model.joblib` duplicates the production pipeline from the family with the highest mean CV selection score.
+Every production model is refitted on all available rows using the hyperparameters selected from chronological training CV. `cv_selected_production_model.joblib` references the production pipeline from the family ranked first by mean CV selection score under the documented deterministic tie-breaking rule.
 
 ### Production Logistic Regression equations
 
@@ -802,8 +816,8 @@ Always map `predict_proba` columns with `estimator_class_order`, not `reporting_
 ### Evaluation versus production artifacts
 
 - Use `evaluation_<model>.joblib` to reproduce predictions from the untouched chronological holdout analysis.
-- Use `production_<model>.joblib` for subsequent predictions after evaluation because it was fitted on all available data.
-- Use `best_overall_model.joblib` when the CV-selected overall family is appropriate for deployment.
+- Use a family-specific `production_<model>.joblib` when a particular model family has been selected for scientific or operational reasons.
+- Use `cv_selected_production_model.joblib` when the training-partition CV ranking is the accepted automatic family-selection rule.
 
 The production model has no untouched internal test set remaining after full-data refitting. Its expected generalization should be judged from the earlier evaluation artifacts and reports, subject to distribution stability.
 
@@ -988,7 +1002,7 @@ viclassify --data data_OF.csv
 - **CV inside training is shuffled.** It does not reproduce forward-chaining or blocked temporal validation.
 - **No grouped validation is implemented.** Related records from the same subject, specimen, batch, cycle, or run can appear in both training and validation folds.
 - **No nested CV is implemented.** Training-partition CV scores are used for hyperparameter selection and are not unbiased nested-CV estimates.
-- **The holdout is reused across model families.** It remains untouched during tuning, but inspecting four families on one holdout can still influence human model choice. The scripted best overall artifact is selected by training CV, not holdout score.
+- **The holdout is reused across model families.** It remains untouched during tuning, but inspecting four families on one holdout can still influence human model choice. The scripted CV-selected production model artifact is selected by training CV, not holdout score.
 - **No calibration analysis is performed.** Predicted probabilities and confidence values should not automatically be interpreted as calibrated frequencies.
 - **No threshold optimization is performed.** Class predictions use each estimator's default decision rule.
 - **No sample or class weighting is used for Histogram Gradient Boosting.** Severe imbalance may require a different design.

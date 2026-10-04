@@ -207,12 +207,15 @@ class TestArtifactRolesDistinct:
             prod_artifact = joblib.load(prod_path)
             assert prod_artifact["model_role"] == "production_full_data_refit"
 
-        # Check best overall production artifact
-        best_path = output_dir / "best_overall_model.joblib"
-        assert best_path.exists()
+        # Check CV-selected production artifact
+        cv_selected_path = output_dir / "cv_selected_production_model.joblib"
+        assert cv_selected_path.exists()
 
-        best_artifact = joblib.load(best_path)
-        assert best_artifact["model_role"] == "best_overall_production_full_data_refit"
+        cv_selected_artifact = joblib.load(cv_selected_path)
+        assert (
+            cv_selected_artifact["model_role"]
+            == "cv_selected_production_full_data_refit"
+        )
 
         # Verify filenames don't overwrite
         eval_files = list(output_dir.glob("evaluation_*.joblib"))
