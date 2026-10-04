@@ -116,6 +116,11 @@ class ClassificationAnalysis:
         self.train_indices: np.ndarray | None = None
         self.test_indices: np.ndarray | None = None
 
+        self.cv_selected_model_name: str | None = None
+        self.cv_selected_score_mean: float | None = None
+        self.cv_selected_score_std: float | None = None
+        self.cv_selection_ranking: list[dict[str, Any]] = []
+
         self.generated_files: set[str] = set()
 
     @property
@@ -1849,11 +1854,40 @@ class ClassificationAnalysis:
 
         cv_summary = pd.DataFrame(self.search_summaries)
 
-        overall_name = str(
-            cv_summary.sort_values(
+        ranked_cv_summary = cv_summary.sort_values(
+            by=[
                 self.selection_mean_column,
-                ascending=False,
-            ).iloc[0]["model"]
+                self.selection_std_column,
+                "mean_fit_time",
+                "model",
+            ],
+            ascending=[
+                False,
+                True,
+                True,
+                True,
+            ],
+            kind="stable",
+        ).reset_index(drop=True)
+
+        ranked_cv_summary["cv_selection_rank"] = np.arange(
+            1,
+            len(ranked_cv_summary) + 1,
+        )
+
+        cv_selected_row = ranked_cv_summary.iloc[0]
+        cv_selected_name = str(cv_selected_row["model"])
+
+        self.cv_selected_model_name = cv_selected_name
+        self.cv_selected_score_mean = float(cv_selected_row[self.selection_mean_column])
+        self.cv_selected_score_std = float(cv_selected_row[self.selection_std_column])
+        self.cv_selection_ranking = ranked_cv_summary.to_dict(orient="records")
+
+        rank_map = dict(
+            zip(
+                ranked_cv_summary["model"],
+                ranked_cv_summary["cv_selection_rank"],
+            )
         )
 
         manifest: list[dict[str, Any]] = []
@@ -1891,9 +1925,12 @@ class ClassificationAnalysis:
                     "model_type": name,
                     "filename": filename,
                     "model_role": ("production_full_data_refit"),
+                    "artifact_kind": ("family_production_model"),
+                    "cv_selected": (name == cv_selected_name),
+                    "cv_selection_rank": int(rank_map[name]),
                     "selection_metric": (self.cfg.selection_metric),
-                    "selection_score_mean": (cv_row[self.selection_mean_column]),
-                    "selection_score_std": (cv_row[self.selection_std_column]),
+                    "selection_score_mean": float(cv_row[self.selection_mean_column]),
+                    "selection_score_std": float(cv_row[self.selection_std_column]),
                     "reporting_class_order": (json.dumps(self.classes)),
                     "estimator_class_order": (json.dumps(estimator_classes)),
                     "feature_count": len(self.cfg.features),
@@ -1904,25 +1941,59 @@ class ClassificationAnalysis:
                 }
             )
 
-        overall_model = self.production_models[overall_name]
+        cv_selected_model = self.production_models[cv_selected_name]
 
-        overall_classes = list(overall_model.named_steps["classifier"].classes_)
+        cv_selected_classes = list(cv_selected_model.named_steps["classifier"].classes_)
 
-        overall_artifact = {
-            "model": overall_model,
-            "model_type": overall_name,
-            "model_role": ("best_overall_production_full_data_refit"),
+        cv_selected_artifact = {
+            "model": cv_selected_model,
+            "model_type": cv_selected_name,
+            "model_role": ("cv_selected_production_full_data_refit"),
             "features": list(self.cfg.features),
             "reporting_class_order": self.classes,
-            "estimator_class_order": (overall_classes),
+            "estimator_class_order": (cv_selected_classes),
             "selection_metric": (self.cfg.selection_metric),
-            "best_parameters": (self.best_params[overall_name]),
+            "best_parameters": (self.best_params[cv_selected_name]),
+            "selection_basis": (
+                "Highest mean non-nested tuning-CV selection score "
+                "within the chronological training partition"
+            ),
+            "selection_score_mean": self.cv_selected_score_mean,
+            "selection_score_std": self.cv_selected_score_std,
+            "selection_score_column": self.selection_mean_column,
+            "holdout_used_for_selection": False,
+            "production_refit_data": "all_available_rows",
         }
 
         joblib.dump(
-            overall_artifact,
-            self.path("best_overall_model.joblib"),
+            cv_selected_artifact,
+            self.path("cv_selected_production_model.joblib"),
             compress=3,
+        )
+
+        manifest.append(
+            {
+                "model_type": cv_selected_name,
+                "filename": "cv_selected_production_model.joblib",
+                "model_role": ("cv_selected_production_full_data_refit"),
+                "artifact_kind": ("cv_selected_production_alias"),
+                "cv_selected": True,
+                "cv_selection_rank": 1,
+                "selection_metric": (self.cfg.selection_metric),
+                "selection_score_mean": self.cv_selected_score_mean,
+                "selection_score_std": self.cv_selected_score_std,
+                "selection_basis": (
+                    "Highest mean non-nested tuning-CV selection score "
+                    "within the chronological training partition"
+                ),
+                "reporting_class_order": (json.dumps(self.classes)),
+                "estimator_class_order": (json.dumps(cv_selected_classes)),
+                "feature_count": len(self.cfg.features),
+                "best_parameters": json.dumps(
+                    self.best_params[cv_selected_name],
+                    sort_keys=True,
+                ),
+            }
         )
 
         pd.DataFrame(manifest).to_csv(
@@ -1938,6 +2009,13 @@ class ClassificationAnalysis:
         )
 
     def metadata(self) -> None:
+        if (
+            self.cv_selected_model_name is None
+            or self.cv_selected_score_mean is None
+            or self.cv_selected_score_std is None
+        ):
+            raise RuntimeError("Production model selection has not been run")
+
         configuration = asdict(self.cfg)
 
         configuration["data"] = str(self.cfg.data.resolve())
@@ -1983,6 +2061,28 @@ class ClassificationAnalysis:
                 "all available data only after holdout "
                 "evaluation."
             ),
+            "cv_selected_production_model": {
+                "selected_model_type": self.cv_selected_model_name,
+                "definition": (
+                    "The production model family ranked first by the configured "
+                    "selection metric in non-nested cross-validation within the "
+                    "chronological training partition, subsequently refitted "
+                    "on all available rows."
+                ),
+                "selection_partition": "chronological_training_partition",
+                "selection_metric": self.cfg.selection_metric,
+                "selection_score_type": "mean non-nested tuning-CV score",
+                "selection_score_mean": self.cv_selected_score_mean,
+                "selection_score_std": self.cv_selected_score_std,
+                "holdout_used_for_selection": False,
+                "nested_cv": False,
+                "production_refit_partition": "all_available_rows",
+                "artifact_filename": "cv_selected_production_model.joblib",
+                "tie_breaking_rule": (
+                    "Higher mean selection score, lower selection-score standard "
+                    "deviation, lower mean fit time, then alphabetical model name."
+                ),
+            },
             "python": platform.python_version(),
             "numpy": np.__version__,
             "pandas": pd.__version__,
