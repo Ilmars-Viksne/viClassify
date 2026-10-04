@@ -71,6 +71,12 @@ class ClassificationAnalysis:
         "Histogram Gradient Boosting",
     )
 
+    CV_SELECTION_TIE_BREAKING_RULE: ClassVar[str] = (
+        "Higher mean selection score, lower selection-score "
+        "standard deviation, lower mean fit time, then "
+        "alphabetical model name."
+    )
+
     SCORING: ClassVar[dict[str, Any]] = {
         "accuracy": "accuracy",
         "balanced_accuracy": "balanced_accuracy",
@@ -136,6 +142,111 @@ class ClassificationAnalysis:
     @property
     def selection_std_column(self) -> str:
         return f"cv_{self.cfg.selection_metric}_std"
+
+    def rank_model_families(
+        self,
+        cv_summary: pd.DataFrame,
+    ) -> pd.DataFrame:
+        required = {
+            "model",
+            self.selection_mean_column,
+            self.selection_std_column,
+            "mean_fit_time",
+        }
+        missing = sorted(required - set(cv_summary.columns))
+        if missing:
+            raise ValueError(
+                "Cannot rank model families because the CV summary "
+                f"is missing required columns: {missing}"
+            )
+
+        if cv_summary.empty:
+            raise ValueError(
+                "Cannot rank model families because the CV summary is empty"
+            )
+
+        ranked = cv_summary.copy()
+
+        if ranked["model"].isna().any():
+            raise ValueError("CV summary contains missing model-family names")
+
+        model_names = ranked["model"].astype(str)
+        normalized_names = model_names.str.strip()
+
+        if normalized_names.eq("").any():
+            raise ValueError("CV summary contains empty model-family names")
+
+        duplicated = normalized_names.duplicated(keep=False)
+        if duplicated.any():
+            duplicate_names = sorted(set(normalized_names.loc[duplicated]))
+            raise ValueError(
+                f"CV summary contains duplicate model-family rows: {duplicate_names}"
+            )
+
+        ranked["model"] = model_names
+
+        numeric_columns = [
+            self.selection_mean_column,
+            self.selection_std_column,
+            "mean_fit_time",
+        ]
+
+        for column in numeric_columns:
+            try:
+                ranked[column] = pd.to_numeric(
+                    ranked[column],
+                    errors="raise",
+                )
+            except Exception as e:
+                raise ValueError(
+                    f"Column '{column}' contains non-numeric values"
+                ) from e
+
+            invalid_mask = ~np.isfinite(ranked[column])
+            if invalid_mask.any():
+                invalid_models = ranked.loc[invalid_mask, "model"].tolist()
+                raise ValueError(
+                    f"Column '{column}' contains non-finite values for model(s): {invalid_models}"
+                )
+
+        if (ranked[self.selection_std_column] < 0).any():
+            invalid_models = ranked.loc[
+                ranked[self.selection_std_column] < 0, "model"
+            ].tolist()
+            raise ValueError(
+                f"Column '{self.selection_std_column}' contains negative standard deviation for model(s): {invalid_models}"
+            )
+
+        if (ranked["mean_fit_time"] < 0).any():
+            invalid_models = ranked.loc[ranked["mean_fit_time"] < 0, "model"].tolist()
+            raise ValueError(
+                f"Column 'mean_fit_time' contains negative fit time for model(s): {invalid_models}"
+            )
+
+        ranked = ranked.sort_values(
+            by=[
+                self.selection_mean_column,
+                self.selection_std_column,
+                "mean_fit_time",
+                "model",
+            ],
+            ascending=[
+                False,
+                True,
+                True,
+                True,
+            ],
+            kind="stable",
+            na_position="last",
+        ).reset_index(drop=True)
+
+        ranked["cv_selection_rank"] = np.arange(
+            1,
+            len(ranked) + 1,
+            dtype=int,
+        )
+
+        return ranked
 
     def path(self, name: str) -> Path:
         self.generated_files.add(name)
@@ -1337,7 +1448,18 @@ class ClassificationAnalysis:
             index=False,
         )
 
+        # Rank families exclusively by training-partition CV results.
+        # Chronological holdout metrics are intentionally excluded.
         cv_summary = pd.DataFrame(self.search_summaries)
+        ranked_cv_summary = self.rank_model_families(cv_summary)
+
+        ranking = ranked_cv_summary[
+            [
+                "model",
+                "cv_selection_rank",
+            ]
+        ].copy()
+        ranking["cv_selected"] = ranking["cv_selection_rank"] == 1
 
         comparison = cv_summary.merge(
             holdout,
@@ -1352,9 +1474,15 @@ class ClassificationAnalysis:
             comparison[cv_metric_column] - comparison[holdout_metric_column]
         )
 
+        comparison = comparison.merge(
+            ranking,
+            on="model",
+            validate="one_to_one",
+        )
+
         comparison.sort_values(
-            cv_metric_column,
-            ascending=False,
+            "cv_selection_rank",
+            ascending=True,
         ).to_csv(
             self.path("model_comparison.csv"),
             index=False,
@@ -1854,26 +1982,9 @@ class ClassificationAnalysis:
 
         cv_summary = pd.DataFrame(self.search_summaries)
 
-        ranked_cv_summary = cv_summary.sort_values(
-            by=[
-                self.selection_mean_column,
-                self.selection_std_column,
-                "mean_fit_time",
-                "model",
-            ],
-            ascending=[
-                False,
-                True,
-                True,
-                True,
-            ],
-            kind="stable",
-        ).reset_index(drop=True)
-
-        ranked_cv_summary["cv_selection_rank"] = np.arange(
-            1,
-            len(ranked_cv_summary) + 1,
-        )
+        # Rank families exclusively by training-partition CV results.
+        # Chronological holdout metrics are intentionally excluded.
+        ranked_cv_summary = self.rank_model_families(cv_summary)
 
         cv_selected_row = ranked_cv_summary.iloc[0]
         cv_selected_name = str(cv_selected_row["model"])
@@ -1918,7 +2029,7 @@ class ClassificationAnalysis:
                 compress=3,
             )
 
-            cv_row = cv_summary.loc[cv_summary["model"] == name].iloc[0]
+            cv_row = ranked_cv_summary.loc[ranked_cv_summary["model"] == name].iloc[0]
 
             manifest.append(
                 {
@@ -1926,11 +2037,17 @@ class ClassificationAnalysis:
                     "filename": filename,
                     "model_role": ("production_full_data_refit"),
                     "artifact_kind": ("family_production_model"),
-                    "cv_selected": (name == cv_selected_name),
+                    "cv_selected": bool(name == cv_selected_name),
                     "cv_selection_rank": int(rank_map[name]),
                     "selection_metric": (self.cfg.selection_metric),
                     "selection_score_mean": float(cv_row[self.selection_mean_column]),
                     "selection_score_std": float(cv_row[self.selection_std_column]),
+                    "mean_fit_time": float(cv_row["mean_fit_time"]),
+                    "selection_basis": (
+                        "Highest ranked non-nested tuning-CV result "
+                        "within the chronological training partition"
+                    ),
+                    "tie_breaking_rule": self.CV_SELECTION_TIE_BREAKING_RULE,
                     "reporting_class_order": (json.dumps(self.classes)),
                     "estimator_class_order": (json.dumps(estimator_classes)),
                     "feature_count": len(self.cfg.features),
@@ -1954,14 +2071,17 @@ class ClassificationAnalysis:
             "estimator_class_order": (cv_selected_classes),
             "selection_metric": (self.cfg.selection_metric),
             "best_parameters": (self.best_params[cv_selected_name]),
+            "cv_selection_rank": 1,
             "selection_basis": (
-                "Highest mean non-nested tuning-CV selection score "
+                "Highest ranked non-nested tuning-CV result "
                 "within the chronological training partition"
             ),
             "selection_score_mean": self.cv_selected_score_mean,
             "selection_score_std": self.cv_selected_score_std,
             "selection_score_column": self.selection_mean_column,
+            "tie_breaking_rule": self.CV_SELECTION_TIE_BREAKING_RULE,
             "holdout_used_for_selection": False,
+            "nested_cv": False,
             "production_refit_data": "all_available_rows",
         }
 
@@ -1982,10 +2102,12 @@ class ClassificationAnalysis:
                 "selection_metric": (self.cfg.selection_metric),
                 "selection_score_mean": self.cv_selected_score_mean,
                 "selection_score_std": self.cv_selected_score_std,
+                "mean_fit_time": float(cv_selected_row["mean_fit_time"]),
                 "selection_basis": (
-                    "Highest mean non-nested tuning-CV selection score "
+                    "Highest ranked non-nested tuning-CV result "
                     "within the chronological training partition"
                 ),
+                "tie_breaking_rule": self.CV_SELECTION_TIE_BREAKING_RULE,
                 "reporting_class_order": (json.dumps(self.classes)),
                 "estimator_class_order": (json.dumps(cv_selected_classes)),
                 "feature_count": len(self.cfg.features),
@@ -2074,14 +2196,28 @@ class ClassificationAnalysis:
                 "selection_score_type": "mean non-nested tuning-CV score",
                 "selection_score_mean": self.cv_selected_score_mean,
                 "selection_score_std": self.cv_selected_score_std,
+                "cv_selection_rank": 1,
+                "selection_basis": (
+                    "Highest ranked non-nested tuning-CV result "
+                    "within the chronological training partition"
+                ),
+                "tie_breaking_rule": self.CV_SELECTION_TIE_BREAKING_RULE,
                 "holdout_used_for_selection": False,
                 "nested_cv": False,
                 "production_refit_partition": "all_available_rows",
                 "artifact_filename": "cv_selected_production_model.joblib",
-                "tie_breaking_rule": (
-                    "Higher mean selection score, lower selection-score standard "
-                    "deviation, lower mean fit time, then alphabetical model name."
-                ),
+                "model_family_cv_ranking": [
+                    {
+                        "model": str(record["model"]),
+                        "cv_selection_rank": int(record["cv_selection_rank"]),
+                        "selection_score_mean": float(
+                            record[self.selection_mean_column]
+                        ),
+                        "selection_score_std": float(record[self.selection_std_column]),
+                        "mean_fit_time": float(record["mean_fit_time"]),
+                    }
+                    for record in self.cv_selection_ranking
+                ],
             },
             "python": platform.python_version(),
             "numpy": np.__version__,
