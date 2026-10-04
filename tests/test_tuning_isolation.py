@@ -134,7 +134,9 @@ class TestPreprocessingFittedWithinCV:
             # Access unfitted transformers via .transformers attribute or named_transformers_ if fitted
             transformers = getattr(preprocessor, "named_transformers_", None)
             if transformers is None:
-                transformers = {name: trans for name, trans, _ in preprocessor.transformers}
+                transformers = {
+                    name: trans for name, trans, _ in preprocessor.transformers
+                }
 
             if name == "Logistic Regression":
                 # Should have imputer and scaler
@@ -310,6 +312,7 @@ class TestEvaluationModelFitUsesTrainingOnly:
         # Spy on pipeline.fit during evaluation
         captured_fits = []
         from sklearn.pipeline import Pipeline
+
         original_fit = Pipeline.fit
 
         def spy_fit(self, X, y=None, **kwargs):

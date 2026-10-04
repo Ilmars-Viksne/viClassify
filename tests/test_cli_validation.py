@@ -308,7 +308,7 @@ class TestCLIValidation:
         """Test valid CLI arguments run without error."""
         # 12 rows, 2 classes (O and F, 6 each), test_fraction=0.25 -> split=9 (training=9, holdout=3)
         # Training (rows 0-8) has 5 O's and 4 F's -> rarest class has 4 >= 2
-        rows = [f"{i},{i*10},{'O' if i % 2 == 0 else 'F'}" for i in range(12)]
+        rows = [f"{i},{i * 10},{'O' if i % 2 == 0 else 'F'}" for i in range(12)]
         data = "X1,X2,Y\n" + "\n".join(rows) + "\n"
         data_file = test_data_dir / "data.csv"
         data_file.write_text(data)
