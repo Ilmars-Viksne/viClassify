@@ -146,42 +146,47 @@ def imbalanced_dataset() -> str:
         rows.append(f"{x1},{x2},{y}")
     return "X1,X2,Y\n" + "\n".join(rows)
 
-    # Use a fixed test directory in the project to avoid sandbox tmp_path issues
-    TEST_BASE_DIR = Path(__file__).parent / "test_temp"
 
-    @pytest.fixture(scope="session", autouse=True)
-    def setup_test_dirs():
-        """Set up test directories."""
-        if TEST_BASE_DIR.exists():
-            shutil.rmtree(TEST_BASE_DIR, ignore_errors=True)
-        TEST_BASE_DIR.mkdir(parents=True, exist_ok=True)
-        yield
-        # Cleanup after all tests
-        if TEST_BASE_DIR.exists():
-            shutil.rmtree(TEST_BASE_DIR, ignore_errors=True)
+# Use a fixed test directory in the project to avoid sandbox tmp_path issues
+TEST_BASE_DIR = Path(__file__).parent / "test_temp"
 
-    @pytest.fixture
-    def test_data_dir() -> Path:
-        """Create a test data directory."""
-        test_dir = TEST_BASE_DIR / "data"
-        test_dir.mkdir(parents=True, exist_ok=True)
-        return test_dir
 
-    @pytest.fixture
-    def test_output_dir() -> Path:
-        """Create a test output directory."""
-        output_dir = TEST_BASE_DIR / "output"
-        output_dir.mkdir(parents=True, exist_ok=True)
-        return output_dir
+@pytest.fixture(scope="session", autouse=True)
+def setup_test_dirs():
+    """Set up test directories."""
+    if TEST_BASE_DIR.exists():
+        shutil.rmtree(TEST_BASE_DIR, ignore_errors=True)
+    TEST_BASE_DIR.mkdir(parents=True, exist_ok=True)
+    yield
+    # Cleanup after all tests
+    if TEST_BASE_DIR.exists():
+        shutil.rmtree(TEST_BASE_DIR, ignore_errors=True)
 
-    @pytest.fixture
-    def temp_data_file(test_data_dir: Path, request: pytest.FixtureRequest) -> Path:
-        """Create a temporary CSV file from a dataset fixture."""
-        dataset_name = request.param
-        dataset = request.getfixturevalue(dataset_name)
-        data_file = test_data_dir / f"{dataset_name}.csv"
-        data_file.write_text(dataset)
-        return data_file
+
+@pytest.fixture
+def test_data_dir() -> Path:
+    """Create a test data directory."""
+    test_dir = TEST_BASE_DIR / "data"
+    test_dir.mkdir(parents=True, exist_ok=True)
+    return test_dir
+
+
+@pytest.fixture
+def test_output_dir() -> Path:
+    """Create a test output directory."""
+    output_dir = TEST_BASE_DIR / "output"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return output_dir
+
+
+@pytest.fixture
+def temp_data_file(test_data_dir: Path, request: pytest.FixtureRequest) -> Path:
+    """Create a temporary CSV file from a dataset fixture."""
+    dataset_name = request.param
+    dataset = request.getfixturevalue(dataset_name)
+    data_file = test_data_dir / f"{dataset_name}.csv"
+    data_file.write_text(dataset)
+    return data_file
 
 
 @pytest.fixture

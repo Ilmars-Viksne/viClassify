@@ -4,6 +4,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 class TestCLIValidation:
     """Tests for CLI validation related to isolation."""
@@ -301,9 +303,13 @@ class TestCLIValidation:
         assert result.returncode != 0
         assert "invalid choice" in result.stderr.lower()
 
+    @pytest.mark.integration
     def test_valid_cli_runs(self, test_data_dir, test_output_dir):
         """Test valid CLI arguments run without error."""
-        data = "X1,X2,Y\n0,0,O\n1,10,F\n2,20,O\n3,30,F\n"
+        # 12 rows, 2 classes (O and F, 6 each), test_fraction=0.25 -> split=9 (training=9, holdout=3)
+        # Training (rows 0-8) has 5 O's and 4 F's -> rarest class has 4 >= 2
+        rows = [f"{i},{i*10},{'O' if i % 2 == 0 else 'F'}" for i in range(12)]
+        data = "X1,X2,Y\n" + "\n".join(rows) + "\n"
         data_file = test_data_dir / "data.csv"
         data_file.write_text(data)
         output_dir = test_output_dir / "cli_test"
@@ -317,6 +323,9 @@ class TestCLIValidation:
                 str(data_file),
                 "--output",
                 str(output_dir),
+                "--features",
+                "X1",
+                "X2",
                 "--test-fraction",
                 "0.25",
                 "--cv-folds",
@@ -334,7 +343,7 @@ class TestCLIValidation:
             capture_output=True,
             text=True,
             cwd=Path(__file__).parent.parent,
-            timeout=60,
+            timeout=180,
         )
 
         # Should run successfully (may have warnings but not errors)

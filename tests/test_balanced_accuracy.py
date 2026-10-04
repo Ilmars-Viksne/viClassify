@@ -143,7 +143,8 @@ def test_balanced_accuracy_binary_one_class_absent():
     assert macro_recall == pytest.approx(expected)
 
 
-def test_evaluate_untouched_holdout_integration():
+@pytest.mark.integration
+def test_evaluate_untouched_holdout_integration(minimal_grids):
     """Integration test for evaluate_untouched_holdout with missing class."""
     import json
     import os
@@ -211,6 +212,7 @@ def test_evaluate_untouched_holdout_integration():
         )
 
         analysis = ClassificationAnalysis(cfg)
+        analysis.grids = minimal_grids
         analysis.run()  # Run the full pipeline to generate all outputs including metadata
 
         # Check the holdout metrics

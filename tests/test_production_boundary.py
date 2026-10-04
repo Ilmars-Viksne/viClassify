@@ -2,14 +2,18 @@
 
 from unittest.mock import patch
 
+import pytest
+from sklearn.pipeline import Pipeline
+
 from viclassify_cli import ClassificationAnalysis, Config
 
 
+@pytest.mark.integration
 class TestProductionModelsUseAllRows:
     """Tests for production models using all rows."""
 
     def test_production_models_use_all_rows(
-        self, binary_chronological_dataset, tmp_path, minimal_grids
+        self, binary_chronological_dataset, tmp_path, minimal_grids, monkeypatch
     ):
         """Test 16: production models use all rows."""
         data_file = tmp_path / "data.csv"
@@ -42,26 +46,23 @@ class TestProductionModelsUseAllRows:
 
         # Spy on production model fit
         captured_fits = []
+        original_fit = Pipeline.fit
 
-        def spy_fit(self, X, y, **kwargs):
+        def spy_fit(self, X, y=None, **fit_params):
             captured_fits.append(
                 {
                     "X": X.copy(),
-                    "y": y.copy(),
+                    "y": y.copy() if y is not None else None,
                     "model_name": getattr(self, "_spy_model_name", "unknown"),
                 }
             )
-            return self._original_fit(X, y, **kwargs)
+            return original_fit(self, X, y, **fit_params)
 
-        from sklearn.pipeline import Pipeline
-
-        with patch.object(Pipeline, "fit", spy_fit):
-            analysis.refit_and_export_production_models()
+        monkeypatch.setattr(Pipeline, "fit", spy_fit)
+        analysis.refit_and_export_production_models()
 
         # Verify production models fitted on all rows
         total_rows = len(analysis.data)
-        len(analysis.train_indices)
-        len(analysis.test_indices)
 
         for fit_info in captured_fits:
             X_fit = fit_info["X"]
@@ -80,6 +81,7 @@ class TestProductionModelsUseAllRows:
             assert set(test_x1).issubset(set(X_fit["X1"].values))
 
 
+@pytest.mark.integration
 class TestProductionFittingAfterEvaluation:
     """Tests for production fitting occurring after evaluation."""
 
@@ -146,6 +148,7 @@ class TestProductionFittingAfterEvaluation:
         )
 
 
+@pytest.mark.integration
 class TestArtifactRolesDistinct:
     """Tests for artifact roles remaining distinct."""
 

@@ -16,6 +16,7 @@ from sklearn.metrics import (
 from viclassify_cli import ClassificationAnalysis, Config
 
 
+@pytest.mark.integration
 class TestCombinedHoldoutMetrics:
     """Tests for combined holdout metrics consistency."""
 
@@ -109,6 +110,7 @@ class TestCombinedHoldoutMetrics:
                     )
 
 
+@pytest.mark.integration
 class TestPerClassClassificationReport:
     """Tests for per-class classification report consistency."""
 
@@ -235,6 +237,7 @@ class TestPerClassClassificationReport:
                 ]
 
 
+@pytest.mark.integration
 class TestConfusionMatrixConsistency:
     """Tests for confusion matrix consistency."""
 
@@ -310,6 +313,7 @@ class TestConfusionMatrixConsistency:
                     )
 
 
+@pytest.mark.integration
 class TestModelComparisonConsistency:
     """Tests for model comparison consistency."""
 
