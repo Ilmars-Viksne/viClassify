@@ -9,6 +9,7 @@ import pytest
 from viclassify_cli import ClassificationAnalysis, Config
 
 
+@pytest.mark.integration
 class TestGridSearchCVReceivesTrainingOnly:
     """Tests for GridSearchCV receiving training rows only."""
 
@@ -54,7 +55,7 @@ class TestGridSearchCVReceivesTrainingOnly:
                     "model_name": getattr(self, "_spy_model_name", "unknown"),
                 }
             )
-            return original_fit(X, y, **kwargs)
+            return original_fit(self, X, y, **kwargs)
 
         from sklearn.model_selection import GridSearchCV
 
@@ -130,19 +131,25 @@ class TestPreprocessingFittedWithinCV:
 
             preprocessor = pipeline.named_steps["preprocessor"]
 
+            # Access unfitted transformers via .transformers attribute or named_transformers_ if fitted
+            transformers = getattr(preprocessor, "named_transformers_", None)
+            if transformers is None:
+                transformers = {name: trans for name, trans, _ in preprocessor.transformers}
+
             if name == "Logistic Regression":
                 # Should have imputer and scaler
-                assert "numeric" in preprocessor.named_transformers_
-                numeric_pipe = preprocessor.named_transformers_["numeric"]
+                assert "numeric" in transformers
+                numeric_pipe = transformers["numeric"]
                 assert "imputer" in numeric_pipe.named_steps
                 assert "scaler" in numeric_pipe.named_steps
             else:
                 # Tree models should have imputer
-                assert "numeric" in preprocessor.named_transformers_
-                numeric_pipe = preprocessor.named_transformers_["numeric"]
+                assert "numeric" in transformers
+                numeric_pipe = transformers["numeric"]
                 assert "imputer" in numeric_pipe.named_steps
 
 
+@pytest.mark.integration
 class TestSelectedConfigCVTrainingOnly:
     """Tests for selected-configuration CV remaining training-only."""
 
@@ -212,6 +219,7 @@ class TestSelectedConfigCVTrainingOnly:
             assert "classifier" in estimator.named_steps
 
 
+@pytest.mark.integration
 class TestCVSplitterFromTrainingTargets:
     """Tests for CV splitter created from training targets."""
 
@@ -264,11 +272,12 @@ class TestCVSplitterFromTrainingTargets:
         # This is implicitly tested by the warning above
 
 
+@pytest.mark.integration
 class TestEvaluationModelFitUsesTrainingOnly:
     """Tests for evaluation model fit using training rows only."""
 
     def test_evaluation_model_fit_training_only(
-        self, binary_chronological_dataset, tmp_path, minimal_grids
+        self, binary_chronological_dataset, tmp_path, minimal_grids, monkeypatch
     ):
         """Test 12: evaluation model fit uses training rows only."""
         data_file = tmp_path / "data.csv"
@@ -300,21 +309,21 @@ class TestEvaluationModelFitUsesTrainingOnly:
 
         # Spy on pipeline.fit during evaluation
         captured_fits = []
+        from sklearn.pipeline import Pipeline
+        original_fit = Pipeline.fit
 
-        def spy_fit(self, X, y, **kwargs):
+        def spy_fit(self, X, y=None, **kwargs):
             captured_fits.append(
                 {
                     "X": X.copy(),
-                    "y": y.copy(),
+                    "y": y.copy() if y is not None else None,
                     "model_name": getattr(self, "_spy_model_name", "unknown"),
                 }
             )
-            return self._original_fit(X, y, **kwargs)
+            return original_fit(self, X, y, **kwargs)
 
-        from sklearn.pipeline import Pipeline
-
-        with patch.object(Pipeline, "fit", spy_fit):
-            analysis.evaluate_untouched_holdout()
+        monkeypatch.setattr(Pipeline, "fit", spy_fit)
+        analysis.evaluate_untouched_holdout()
 
         # Verify each evaluation model fit used only training data
         train_size = len(analysis.train_indices)
@@ -338,6 +347,7 @@ class TestEvaluationModelFitUsesTrainingOnly:
         # This is implicitly tested by the holdout prediction exports
 
 
+@pytest.mark.integration
 class TestEvaluationArtifactsTrainingOnly:
     """Tests for evaluation artifacts being training-only."""
 
@@ -401,6 +411,7 @@ class TestEvaluationArtifactsTrainingOnly:
             np.testing.assert_array_equal(preds, exported_preds)
 
 
+@pytest.mark.integration
 class TestHoldoutPredictionExports:
     """Tests for holdout prediction exports containing only holdout rows."""
 
@@ -490,6 +501,7 @@ class TestHoldoutPredictionExports:
             )
 
 
+@pytest.mark.integration
 class TestMisclassificationExports:
     """Tests for misclassification exports being exact subset."""
 
