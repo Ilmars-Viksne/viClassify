@@ -7,6 +7,8 @@ data/
 # ==========================================
 # Python Bytecode & Cache
 # ==========================================
+test_temp/
+.pytest_cache/
 .pytest_tmp/
 __pycache__/
 *.py[cod]
