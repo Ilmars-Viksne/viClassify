@@ -483,9 +483,26 @@ Every hyperparameter candidate is assessed using:
 
 `cv_selected_production_model.joblib` contains the production pipeline from the model family ranked first by the configured selection metric in non-nested cross-validation performed within the chronological training partition. The selected configuration is subsequently refitted on all available rows. The chronological holdout is used for evaluation and is not used for the scripted family-selection decision.
 
+#### Deterministic CV family ranking
+
+Model families are ranked by the mean value of the configured training-partition CV selection metric, from highest to lowest. Exact ties are resolved by lower CV standard deviation, then lower mean fit time, and finally alphabetical model name. Ranking uses the stored numeric values rather than rounded display values. The chronological holdout is excluded from this scripted selection rule.
+
+Specifically:
+1. Families are ranked within the chronological training partition.
+2. The configured selection metric determines the mean and standard-deviation columns.
+3. Mean CV score is the primary criterion.
+4. Lower CV score variability is the first tie-breaker.
+5. Lower mean fit time is the second tie-breaker.
+6. Alphabetical model name is the final deterministic tie-breaker.
+7. Holdout performance is not used for ranking.
+8. The CV results are non-nested tuning-CV results.
+9. Ranking uses full stored numeric values rather than rounded display values (tie-breaking criteria are applied only when preceding values are exactly equal in the stored CV summary; display rounding does not define a tie).
+10. Deterministic ranking ensures reproducibility but does not establish statistical superiority.
+
+Selection workflow steps:
 1. The chronological holdout is created before tuning.
 2. Hyperparameters are selected using stratified shuffled K-fold CV inside the chronological training partition.
-3. Model families are ranked using the configured selection metric from that same training-partition tuning design under a deterministic tie-breaking rule (higher mean selection score, lower standard deviation, lower mean fit time, then alphabetical model name).
+3. Model families are ranked using the configured selection metric from that same training-partition tuning design under the deterministic tie-breaking rule.
 4. The highest-ranked family is designated the CV-selected production family.
 5. That selected family is refitted on all available rows.
 6. The resulting pipeline is exported as `cv_selected_production_model.joblib`.
@@ -740,6 +757,8 @@ model_export_manifest.csv
 
 Every production model is refitted on all available rows using the hyperparameters selected from chronological training CV. `cv_selected_production_model.joblib` references the production pipeline from the family ranked first by mean CV selection score under the documented deterministic tie-breaking rule.
 
+`model_export_manifest.csv` records all production artifacts and contains explicit ranking columns (`cv_selected`, `cv_selection_rank`, `selection_score_mean`, `selection_score_std`, `mean_fit_time`, `selection_metric`, `selection_basis`, and `tie_breaking_rule`) for both `family_production_model` rows and the `cv_selected_production_alias` row.
+
 ### Production Logistic Regression equations
 
 ```text
@@ -757,7 +776,7 @@ run_metadata.json
 generated_files.txt
 ```
 
-`run_metadata.json` records configuration, observed reporting class order, validation and interpretation notes, and versions of Python, NumPy, pandas, SciPy, and scikit-learn.
+`run_metadata.json` records configuration, observed reporting class order, validation and interpretation notes, versions of Python, NumPy, pandas, SciPy, and scikit-learn, and the complete `model_family_cv_ranking` list sorted by `cv_selection_rank` along with the authoritative `tie_breaking_rule`.
 
 ## Loading an exported model
 
