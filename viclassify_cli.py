@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import platform
 import re
+import shutil
+import uuid
 import warnings
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -46,6 +49,71 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
 
+def validate_probability_matrix(
+    y_true: Any,
+    probabilities: Any,
+    estimator_classes: Any,
+    *,
+    model_name: str,
+    row_sum_tolerance: float = 1e-8,
+    probability_tolerance: float = 1e-12,
+) -> None:
+    """Validate prediction probability matrix before log-loss calculation."""
+    proba_arr = np.asarray(probabilities)
+    if proba_arr.ndim != 2:
+        raise ValueError(
+            f"Probability matrix must be a two-dimensional array; "
+            f"received shape {proba_arr.shape} for model family '{model_name}'."
+        )
+
+    y_true_arr = np.asarray(y_true)
+    if len(proba_arr) != len(y_true_arr):
+        raise ValueError(
+            f"Probability row count ({len(proba_arr)}) does not match y_true length ({len(y_true_arr)}) "
+            f"for model family '{model_name}'."
+        )
+
+    estimator_classes_list = list(estimator_classes)
+    if len(set(estimator_classes_list)) != len(estimator_classes_list):
+        raise ValueError(
+            f"Estimator class order contains duplicate labels: {estimator_classes_list} "
+            f"for model family '{model_name}'."
+        )
+
+    if proba_arr.shape[1] != len(estimator_classes_list):
+        raise ValueError(
+            f"Probability column count ({proba_arr.shape[1]}) does not match estimator class count "
+            f"({len(estimator_classes_list)}) for model family '{model_name}'."
+        )
+
+    observed_labels = set(pd.unique(y_true_arr))
+    missing_from_estimator = observed_labels - set(estimator_classes_list)
+    if missing_from_estimator:
+        raise ValueError(
+            f"Observed true label(s) {sorted(missing_from_estimator, key=str)} missing from estimator classes "
+            f"{estimator_classes_list} for model family '{model_name}'."
+        )
+
+    if not np.all(np.isfinite(proba_arr)):
+        raise ValueError(
+            f"Probability matrix contains nonfinite values (NaN or Inf) for model family '{model_name}'."
+        )
+
+    if np.any(proba_arr < -probability_tolerance) or np.any(
+        proba_arr > 1.0 + probability_tolerance
+    ):
+        raise ValueError(
+            f"Probability values out of bounds [0, 1] for model family '{model_name}'."
+        )
+
+    row_sums = np.sum(proba_arr, axis=1)
+    if not np.allclose(row_sums, 1.0, atol=row_sum_tolerance):
+        raise ValueError(
+            f"Probability row sums do not equal 1.0 within tolerance {row_sum_tolerance} "
+            f"for model family '{model_name}'."
+        )
+
+
 @dataclass(frozen=True)
 class Config:
     data: Path
@@ -61,6 +129,178 @@ class Config:
     dpi: int
     near_constant_threshold: float = 0.99
     selection_metric: str = "macro_f1"
+    output_policy: str = "fail"
+
+
+class OutputTransaction:
+    """Manages transactional output directory staging, validation, and atomic commits."""
+
+    def __init__(self, data_path: Path, final_path: Path, policy: str = "fail") -> None:
+        self.data_path = data_path.resolve()
+        self.final_path = final_path.resolve()
+        self.policy = policy
+
+        if self.policy not in ("fail", "replace"):
+            raise ValueError(
+                f"Invalid output policy '{self.policy}'. Must be 'fail' or 'replace'."
+            )
+
+        self.transaction_id = uuid.uuid4().hex
+        parent = self.final_path.parent
+        output_name = self.final_path.name
+        self.staging_path = parent / f".{output_name}.staging-{self.transaction_id}"
+        self.backup_path = parent / f".{output_name}.backup-{self.transaction_id}"
+
+        self._prepared = False
+        self._committed = False
+
+    def prepare(self) -> Path:
+        """Inspect paths and set up the staging directory."""
+        self._validate_path_safety()
+
+        if self.final_path.exists():
+            if self.final_path.is_file() or self.final_path.is_symlink():
+                raise ValueError(
+                    f"Output path '{self.final_path}' exists and is not a directory."
+                )
+
+            is_empty = not any(self.final_path.iterdir())
+            if self.policy == "fail" and not is_empty:
+                raise RuntimeError(
+                    f"Output directory '{self.final_path}' exists and is nonempty. "
+                    "Use --output-policy replace to overwrite existing results."
+                )
+
+        # Create parent and staging directories
+        self.final_path.parent.mkdir(parents=True, exist_ok=True)
+        if self.staging_path.exists():
+            shutil.rmtree(self.staging_path, ignore_errors=True)
+        self.staging_path.mkdir(parents=True, exist_ok=False)
+
+        self._prepared = True
+        return self.staging_path
+
+    def _validate_path_safety(self) -> None:
+        """Reject dangerous paths."""
+        final = self.final_path
+
+        # 1. System root
+        if final == final.parent:
+            raise ValueError(f"Output path '{final}' cannot be the filesystem root.")
+
+        # 2. User home directory
+        try:
+            home = Path.home().resolve()
+            if final == home:
+                raise ValueError(f"Output path '{final}' cannot be the user home directory.")
+        except RuntimeError:
+            pass
+
+        # 3. Current working directory
+        cwd = Path.cwd().resolve()
+        if final == cwd:
+            raise ValueError(f"Output path '{final}' cannot be the current working directory.")
+
+        # 4. Input file path
+        if final == self.data_path:
+            raise ValueError(f"Output path '{final}' cannot be equal to input CSV path.")
+
+        # 5. Input file parent directory
+        if final == self.data_path.parent:
+            raise ValueError(
+                f"Output path '{final}' cannot be equal to input CSV parent directory."
+            )
+
+        # 6. Check if final_path is a symlink pointing outside
+        if final.is_symlink():
+            target = final.readlink()
+            raise ValueError(f"Output path '{final}' is a symlink pointing to '{target}'.")
+
+    def validate_staged_output(self, generated_files: set[str]) -> None:
+        """Validate staged artifacts before committing."""
+        if not self.staging_path.exists():
+            raise RuntimeError(f"Staging directory '{self.staging_path}' does not exist.")
+
+        manifest_file = self.staging_path / "generated_files.txt"
+        if not manifest_file.exists():
+            raise RuntimeError(
+                f"Mandatory manifest file 'generated_files.txt' is missing from staging."
+            )
+
+        metadata_file = self.staging_path / "run_metadata.json"
+        if not metadata_file.exists():
+            raise RuntimeError(
+                f"Mandatory metadata file 'run_metadata.json' is missing from staging."
+            )
+
+        try:
+            with metadata_file.open(encoding="utf-8") as f:
+                json.load(f)
+        except Exception as exc:
+            raise RuntimeError(f"Staged run_metadata.json is malformed: {exc}") from exc
+
+        manifest_lines = [
+            line.strip()
+            for line in manifest_file.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+
+        for rel_file in manifest_lines:
+            file_path = self.staging_path / rel_file
+            if not file_path.exists():
+                raise RuntimeError(
+                    f"Registered generated file '{rel_file}' is missing from staging."
+                )
+
+        # Ensure no manifest line references transient staging names or external paths
+        for rel_file in manifest_lines:
+            if "staging-" in rel_file or "backup-" in rel_file:
+                raise RuntimeError(
+                    f"Manifest contains transient staging reference: '{rel_file}'"
+                )
+
+    def commit(self, generated_files: set[str]) -> None:
+        """Commit staged output to final directory atomically."""
+        if not self._prepared:
+            raise RuntimeError("Transaction was not prepared.")
+
+        self.validate_staged_output(generated_files)
+
+        if self.final_path.exists():
+            # Directory exists (empty under fail policy, or existing under replace policy)
+            if self.policy == "replace":
+                if self.backup_path.exists():
+                    shutil.rmtree(self.backup_path, ignore_errors=True)
+                os.rename(self.final_path, self.backup_path)
+            else: # fail policy with existing empty directory
+                os.rmdir(self.final_path)
+
+        try:
+            os.rename(self.staging_path, self.final_path)
+        except Exception as exc:
+            # If rename failed and backup exists, restore backup
+            if self.backup_path.exists() and not self.final_path.exists():
+                os.rename(self.backup_path, self.final_path)
+            raise RuntimeError(
+                f"Failed to commit transaction to '{self.final_path}': {exc}"
+            ) from exc
+
+        # Clean up backup after successful commit
+        if self.backup_path.exists():
+            shutil.rmtree(self.backup_path, ignore_errors=True)
+
+        self._committed = True
+
+    def rollback(self) -> None:
+        """Remove staging directory and restore backup if needed."""
+        if self.staging_path.exists():
+            shutil.rmtree(self.staging_path, ignore_errors=True)
+
+        if self.backup_path.exists():
+            if not self.final_path.exists():
+                os.rename(self.backup_path, self.final_path)
+            else:
+                shutil.rmtree(self.backup_path, ignore_errors=True)
 
 
 class ClassificationAnalysis:
@@ -102,9 +342,23 @@ class ClassificationAnalysis:
         ),
     }
 
-    def __init__(self, cfg: Config) -> None:
+    def __init__(
+        self,
+        cfg: Config,
+        transaction: OutputTransaction | None = None,
+    ) -> None:
         self.cfg = cfg
-        self.cfg.output.mkdir(parents=True, exist_ok=True)
+        self.transaction = transaction or OutputTransaction(
+            data_path=self.cfg.data,
+            final_path=self.cfg.output,
+            policy=self.cfg.output_policy,
+        )
+
+        self.active_output_dir = (
+            self.transaction.prepare()
+            if not self.transaction._prepared
+            else self.transaction.staging_path
+        )
 
         self.df: pd.DataFrame | None = None
         self.classes: list[str] = []
@@ -250,7 +504,7 @@ class ClassificationAnalysis:
 
     def path(self, name: str) -> Path:
         self.generated_files.add(name)
-        return self.cfg.output / name
+        return self.active_output_dir / name
 
     @staticmethod
     def slug(name: str) -> str:
@@ -1356,13 +1610,37 @@ class ClassificationAnalysis:
             }
 
             try:
-                metrics["log_loss"] = log_loss(
+                validate_probability_matrix(
+                    y_true=y_test,
+                    probabilities=proba,
+                    estimator_classes=model_classes,
+                    model_name=name,
+                )
+
+                loss_val = log_loss(
                     y_test,
                     proba,
                     labels=model_classes,
                 )
-            except ValueError:
-                metrics["log_loss"] = np.nan
+
+                if not np.isfinite(loss_val):
+                    raise ValueError(
+                        f"log_loss returned a nonfinite result: {loss_val!r}"
+                    )
+
+                metrics["log_loss"] = loss_val
+            except Exception as exc:
+                observed_labels = sorted(
+                    pd.unique(y_test).tolist(),
+                    key=str,
+                )
+                raise RuntimeError(
+                    f"Log-loss calculation failed for {name}.\n"
+                    f"Probability shape: {np.asarray(proba).shape}\n"
+                    f"Estimator classes: {list(model_classes)!r}\n"
+                    f"Observed holdout labels: {observed_labels!r}\n"
+                    f"Cause: {exc}"
+                ) from exc
 
             self.holdout_rows.append(metrics)
 
@@ -2244,7 +2522,7 @@ class ClassificationAnalysis:
 
         files = sorted(self.generated_files | {manifest_name})
 
-        manifest_path = self.cfg.output / manifest_name
+        manifest_path = self.active_output_dir / manifest_name
 
         manifest_path.write_text(
             "\n".join(files) + "\n",
@@ -2254,22 +2532,28 @@ class ClassificationAnalysis:
         self.generated_files.add(manifest_name)
 
     def run(self) -> None:
-        self.load()
-        self.audit_and_describe()
-        self.correlations()
-        self.exploratory_plots()
-        self.create_chronological_split()
-        self.build_models()
-        self.tune_on_training_only()
-        self.evaluate_untouched_holdout()
-        self.export_evaluation_logistic_outputs()
-        self.refit_and_export_production_models()
-        self.metadata()
-        self.write_generated_file_manifest()
+        try:
+            self.load()
+            self.audit_and_describe()
+            self.correlations()
+            self.exploratory_plots()
+            self.create_chronological_split()
+            self.build_models()
+            self.tune_on_training_only()
+            self.evaluate_untouched_holdout()
+            self.export_evaluation_logistic_outputs()
+            self.refit_and_export_production_models()
+            self.metadata()
+            self.write_generated_file_manifest()
+
+            self.transaction.commit(self.generated_files)
+        except Exception:
+            self.transaction.rollback()
+            raise
 
         self.heading("Analysis completed")
 
-        print(f"Results saved to: {self.cfg.output.resolve()}")
+        print(f"Results saved to: {self.transaction.final_path}")
 
 
 def parse_args() -> argparse.Namespace:
@@ -2289,6 +2573,16 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=Path("viclassify_results"),
         help="Output directory",
+    )
+
+    parser.add_argument(
+        "--output-policy",
+        choices=["fail", "replace"],
+        default="fail",
+        help=(
+            "Behavior when target output directory exists and is nonempty: "
+            "'fail' refuses to run; 'replace' replaces existing output on completion."
+        ),
     )
 
     parser.add_argument(
@@ -2447,6 +2741,7 @@ def main() -> None:
         dpi=args.dpi,
         near_constant_threshold=(args.near_constant_threshold),
         selection_metric=(args.selection_metric),
+        output_policy=args.output_policy,
     )
 
     ClassificationAnalysis(cfg).run()

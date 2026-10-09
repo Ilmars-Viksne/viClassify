@@ -10,13 +10,13 @@ import pytest
 class TestCLIValidation:
     """Tests for CLI validation related to isolation."""
 
-    def test_test_fraction_validation(self, test_data_dir, test_output_dir):
+    def test_test_fraction_validation(self, tmp_path):
         """Test CLI rejects invalid test-fraction values."""
         # Create minimal valid data
         data = "X1,X2,Y\n0,0,O\n1,10,F\n2,20,O\n3,30,F\n"
-        data_file = test_data_dir / "data.csv"
-        data_file.write_text(data)
-        output_dir = test_output_dir / "cli_test"
+        data_file = tmp_path / "data.csv"
+        data_file.write_text(data, encoding="utf-8")
+        output_dir = tmp_path / "cli_test"
 
         # Test test-fraction <= 0
         result = subprocess.run(
@@ -76,12 +76,12 @@ class TestCLIValidation:
         assert result.returncode != 0
         assert "test-fraction must be between 0 and 1" in result.stderr
 
-    def test_cv_folds_validation(self, test_data_dir, test_output_dir):
+    def test_cv_folds_validation(self, tmp_path):
         """Test CLI rejects invalid cv-folds values."""
         data = "X1,X2,Y\n0,0,O\n1,10,F\n2,20,O\n3,30,F\n"
-        data_file = test_data_dir / "data.csv"
-        data_file.write_text(data)
-        output_dir = test_output_dir / "cli_test"
+        data_file = tmp_path / "data.csv"
+        data_file.write_text(data, encoding="utf-8")
+        output_dir = tmp_path / "cli_test"
 
         # Test cv-folds < 2
         result = subprocess.run(
@@ -110,12 +110,12 @@ class TestCLIValidation:
         assert result.returncode != 0
         assert "cv-folds must be at least 2" in result.stderr
 
-    def test_duplicate_features_validation(self, test_data_dir, test_output_dir):
+    def test_duplicate_features_validation(self, tmp_path):
         """Test CLI rejects duplicate feature names."""
         data = "X1,X2,Y\n0,0,O\n1,10,F\n"
-        data_file = test_data_dir / "data.csv"
-        data_file.write_text(data)
-        output_dir = test_output_dir / "cli_test"
+        data_file = tmp_path / "data.csv"
+        data_file.write_text(data, encoding="utf-8")
+        output_dir = tmp_path / "cli_test"
 
         result = subprocess.run(
             [
@@ -144,12 +144,12 @@ class TestCLIValidation:
         assert result.returncode != 0
         assert "duplicate column names" in result.stderr
 
-    def test_target_in_features_validation(self, test_data_dir, test_output_dir):
+    def test_target_in_features_validation(self, tmp_path):
         """Test CLI rejects target included in features."""
         data = "X1,X2,Y\n0,0,O\n1,10,F\n"
-        data_file = test_data_dir / "data.csv"
-        data_file.write_text(data)
-        output_dir = test_output_dir / "cli_test"
+        data_file = tmp_path / "data.csv"
+        data_file.write_text(data, encoding="utf-8")
+        output_dir = tmp_path / "cli_test"
 
         result = subprocess.run(
             [
@@ -180,12 +180,12 @@ class TestCLIValidation:
         assert result.returncode != 0
         assert "target must not also appear in --features" in result.stderr
 
-    def test_empty_target_validation(self, test_data_dir, test_output_dir):
+    def test_empty_target_validation(self, tmp_path):
         """Test CLI rejects empty target."""
         data = "X1,X2,Y\n0,0,O\n1,10,F\n"
-        data_file = test_data_dir / "data.csv"
-        data_file.write_text(data)
-        output_dir = test_output_dir / "cli_test"
+        data_file = tmp_path / "data.csv"
+        data_file.write_text(data, encoding="utf-8")
+        output_dir = tmp_path / "cli_test"
 
         result = subprocess.run(
             [
@@ -213,12 +213,12 @@ class TestCLIValidation:
         assert result.returncode != 0
         assert "target must not be empty" in result.stderr
 
-    def test_invalid_n_jobs_validation(self, test_data_dir, test_output_dir):
+    def test_invalid_n_jobs_validation(self, tmp_path):
         """Test CLI rejects invalid n-jobs values."""
         data = "X1,X2,Y\n0,0,O\n1,10,F\n"
-        data_file = test_data_dir / "data.csv"
-        data_file.write_text(data)
-        output_dir = test_output_dir / "cli_test"
+        data_file = tmp_path / "data.csv"
+        data_file.write_text(data, encoding="utf-8")
+        output_dir = tmp_path / "cli_test"
 
         # Test n-jobs = 0
         result = subprocess.run(
@@ -270,12 +270,12 @@ class TestCLIValidation:
         assert result.returncode != 0
         assert "n-jobs must be -1 or a positive integer" in result.stderr
 
-    def test_invalid_selection_metric_validation(self, test_data_dir, test_output_dir):
+    def test_invalid_selection_metric_validation(self, tmp_path):
         """Test CLI rejects invalid selection-metric values."""
         data = "X1,X2,Y\n0,0,O\n1,10,F\n"
-        data_file = test_data_dir / "data.csv"
-        data_file.write_text(data)
-        output_dir = test_output_dir / "cli_test"
+        data_file = tmp_path / "data.csv"
+        data_file.write_text(data, encoding="utf-8")
+        output_dir = tmp_path / "cli_test"
 
         result = subprocess.run(
             [
@@ -304,15 +304,15 @@ class TestCLIValidation:
         assert "invalid choice" in result.stderr.lower()
 
     @pytest.mark.integration
-    def test_valid_cli_runs(self, test_data_dir, test_output_dir):
+    def test_valid_cli_runs(self, tmp_path):
         """Test valid CLI arguments run without error."""
         # 12 rows, 2 classes (O and F, 6 each), test_fraction=0.25 -> split=9 (training=9, holdout=3)
         # Training (rows 0-8) has 5 O's and 4 F's -> rarest class has 4 >= 2
         rows = [f"{i},{i * 10},{'O' if i % 2 == 0 else 'F'}" for i in range(12)]
         data = "X1,X2,Y\n" + "\n".join(rows) + "\n"
-        data_file = test_data_dir / "data.csv"
-        data_file.write_text(data)
-        output_dir = test_output_dir / "cli_test"
+        data_file = tmp_path / "data.csv"
+        data_file.write_text(data, encoding="utf-8")
+        output_dir = tmp_path / "cli_test"
 
         result = subprocess.run(
             [

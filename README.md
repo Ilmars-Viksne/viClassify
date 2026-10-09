@@ -230,7 +230,8 @@ python viclassify_cli.py \
 | Argument | Required | Default | Validation and purpose |
 |---|---:|---|---|
 | `--data` | Yes | None | Input CSV path. The file must exist when analysis starts. |
-| `--output` | No | `viclassify_results` | Output directory, created with parent directories when needed. Existing files with matching names are overwritten. |
+| `--output` | No | `viclassify_results` | Target output directory, created with parent directories when needed. |
+| `--output-policy` | No | `fail` | Output directory collision policy: `fail` refuses to start if target exists and is nonempty; `replace` replaces existing output upon successful completion. |
 | `--target` | No | `Y` | Nonempty target-column name. It must not also occur in `--features`. |
 | `--features` | No | `X1 X2 X3 X4 X5 X6 X7` | One or more ordered, nonempty, distinct predictor-column names. |
 | `--class-order` | No | Detected and sorted | Optional distinct, nonempty reporting labels. Unobserved requested labels produce a warning and are omitted. Observed labels not listed are appended in sorted order. |
@@ -576,7 +577,7 @@ For predicted probability `p_i,y_i` assigned to the true class:
 log_loss = -(1 / N) * sum_i log(p_i,y_i)
 ```
 
-Log loss rewards calibrated, confident correct predictions and strongly penalizes confident errors. If the holdout does not contain all estimator classes, viClassify still supplies the estimator class order to `log_loss`. If scikit-learn rejects the calculation, the exported value is `NaN`.
+Log loss rewards calibrated, confident correct predictions and strongly penalizes confident errors. Prior to log-loss evaluation, viClassify strictly validates the predicted probability matrix (shapes, finiteness, bounds in [0, 1], row sums equal to 1.0, and presence of all observed true labels in the estimator class order). If probability validation or log-loss calculation fails, a descriptive `RuntimeError` is raised with full model and evaluation context.
 
 ### CV-to-holdout gap
 
@@ -953,24 +954,49 @@ Preprocessing is part of each scikit-learn `Pipeline`. Keep learned transformati
 
 All tracked output paths should be created by `self.path(name)`. This registers the filename for `generated_files.txt`. Direct writes that bypass `self.path()` will not appear in the manifest.
 
-### Suggested development checks
+### Automated tests
 
-The repository does not currently include an automated test suite. Recommended tests include:
+viClassify includes an extensive automated test suite built with `pytest`.
 
-- CLI rejection of invalid fractions, fold counts, worker counts, DPI, duplicate features, target leakage, and invalid thresholds.
-- Rejection of missing files, empty datasets, duplicate columns, reserved `Sequence`, missing target labels, one-class targets, and all-missing features.
-- Numeric coercion and infinity replacement.
-- Preservation of chronological split boundaries.
-- Absence of holdout rows from grid search.
-- Automatic fold-count reduction.
-- Exact artifact keys and estimator probability order.
-- Correct original-unit Logistic Regression conversion.
-- Expected output manifest for binary and multiclass fixtures.
-- Reproducibility with a fixed seed.
-- Behavior when the holdout lacks one or more classes.
-- Headless plotting under the configured Matplotlib `Agg` backend.
+#### Test coverage
 
-A practical test stack would use `pytest`, `tmp_path`, small deterministic CSV fixtures, and `subprocess.run()` for end-to-end CLI tests.
+The test suite validates the following core behavior:
+
+- **CLI and configuration validation:** argument parsing, bounds checking, duplicate feature rejection, target leakage prevention, and output policy verification.
+- **Dataset validation:** header sanitization, numeric coercion, missingness and infinity counting, empty label rejection, duplicate row detection, and feature audit generation.
+- **Chronological split isolation:** row position preservation via `Sequence`, test-fraction boundary calculations, disjoint train/test partition guarantees, and holdout class availability warnings.
+- **Preprocessing isolation:** verifying median imputation and standard scaling are fitted inside CV folds without information leakage.
+- **Hyperparameter-tuning isolation:** training-partition CV search mechanics, parameter grid evaluation, and score recording.
+- **Effective CV fold-count behavior:** dynamic reduction of fold counts based on training-partition class counts.
+- **Absent-holdout-class metric behavior:** verified calculation of balanced accuracy and macro recall when reporting classes are missing from the holdout.
+- **Evaluation versus production model boundaries:** ensuring evaluation pipelines use chronological training data only while production pipelines refit on all available records.
+- **Deterministic model-family ranking and tie-breaking:** verification of multi-tier ranking rules (mean score, score std, fit time, alphabetical name).
+- **Log-loss and probability matrix validation:** strict fail-fast validation of probability shapes, finite bounds, row sums, and estimator class order alignment.
+- **Output-directory transaction protection:** staging creation, manifest validation, safe commit/rollback, and protection of input files and system directories.
+- **Artifact, manifest and metadata validation:** verification of `.joblib` contents, `generated_files.txt`, `model_export_manifest.csv`, and `run_metadata.json`.
+- **Binary and multiclass integration workflows:** end-to-end execution on deterministic synthetic datasets.
+
+#### Running the tests
+
+Run all automated tests:
+
+```bash
+python -m pytest
+```
+
+Execute fast unit tests excluding integration workflows:
+
+```bash
+python -m pytest -m "not integration"
+```
+
+Execute end-to-end integration tests:
+
+```bash
+python -m pytest -m integration
+```
+
+Note that continuous integration (CI) workflow setup across supported Python versions remains part of future infrastructure development.
 
 ### Code-quality tooling
 
@@ -1113,14 +1139,14 @@ Potential future extensions include:
 
 - grouped and stratified-group cross-validation;
 - blocked, rolling, or expanding-window temporal validation;
-- nested cross-validation;
+- continuous integration across supported Python versions;
+- expanded regression and end-to-end test coverage;
 - probability calibration and calibration plots;
 - decision-threshold optimization;
 - cost-sensitive Histogram Gradient Boosting;
 - categorical predictors;
 - YAML or TOML configuration;
 - input and source hashing for stronger provenance;
-- automated tests and continuous integration;
 - `pyproject.toml` packaging and a `viclassify` console entry point;
 - additional estimators and user-configurable search grids.
 
