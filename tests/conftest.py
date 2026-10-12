@@ -147,6 +147,22 @@ def imbalanced_dataset() -> str:
 
 
 @pytest.fixture
+def test_data_dir(tmp_path: Path) -> Path:
+    """Create a test data directory."""
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    return data_dir
+
+
+@pytest.fixture
+def test_output_dir(tmp_path: Path) -> Path:
+    """Create a test output directory."""
+    output_dir = tmp_path / "output"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return output_dir
+
+
+@pytest.fixture
 def temp_data_file(tmp_path: Path, request: pytest.FixtureRequest) -> Path:
     """Create a temporary CSV file from a dataset fixture."""
     dataset_name = request.param

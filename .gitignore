@@ -68,7 +68,8 @@ htmlcov/
 # Environment Variables & Secrets
 # ==========================================
 .env
-.yaml
+config.local.yaml
+config.local.yml
 instance/
 .secret
 

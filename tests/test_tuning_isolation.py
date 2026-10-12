@@ -38,10 +38,9 @@ class TestGridSearchCVReceivesTrainingOnly:
         )
 
         analysis = ClassificationAnalysis(cfg)
-        analysis.grids = minimal_grids
         analysis.load()
         analysis.create_chronological_split()
-        analysis.build_models()
+        analysis.build_models(grid_overrides=minimal_grids)
 
         # Spy on GridSearchCV.fit
         original_fit = None
@@ -118,10 +117,9 @@ class TestPreprocessingFittedWithinCV:
         )
 
         analysis = ClassificationAnalysis(cfg)
-        analysis.grids = minimal_grids
         analysis.load()
         analysis.create_chronological_split()
-        analysis.build_models()
+        analysis.build_models(grid_overrides=minimal_grids)
 
         # Verify each model pipeline has preprocessor and classifier
         for name, pipeline in analysis.models.items():
@@ -180,10 +178,9 @@ class TestSelectedConfigCVTrainingOnly:
         )
 
         analysis = ClassificationAnalysis(cfg)
-        analysis.grids = minimal_grids
         analysis.load()
         analysis.create_chronological_split()
-        analysis.build_models()
+        analysis.build_models(grid_overrides=minimal_grids)
 
         # Spy on cross_validate
         captured_cv = []
@@ -261,10 +258,9 @@ class TestCVSplitterFromTrainingTargets:
         )
 
         analysis = ClassificationAnalysis(cfg)
-        analysis.grids = minimal_grids
         analysis.load()
         analysis.create_chronological_split()
-        analysis.build_models()
+        analysis.build_models(grid_overrides=minimal_grids)
 
         # Capture warning about fold reduction
         with pytest.warns(UserWarning, match="Reducing CV folds from 8 to 5"):
@@ -303,10 +299,9 @@ class TestEvaluationModelFitUsesTrainingOnly:
         )
 
         analysis = ClassificationAnalysis(cfg)
-        analysis.grids = minimal_grids
         analysis.load()
         analysis.create_chronological_split()
-        analysis.build_models()
+        analysis.build_models(grid_overrides=minimal_grids)
         analysis.tune_on_training_only()
 
         # Spy on pipeline.fit during evaluation
@@ -379,19 +374,19 @@ class TestEvaluationArtifactsTrainingOnly:
         )
 
         analysis = ClassificationAnalysis(cfg)
-        analysis.grids = minimal_grids
         analysis.load()
         analysis.create_chronological_split()
-        analysis.build_models()
+        analysis.build_models(grid_overrides=minimal_grids)
         analysis.tune_on_training_only()
         analysis.evaluate_untouched_holdout()
 
         # Load each evaluation artifact
         import joblib
 
+        out_dir = analysis.working_output_dir
         for name in analysis.models:
             slug = analysis.slug(name)
-            artifact_path = output_dir / f"evaluation_{slug}.joblib"
+            artifact_path = out_dir / f"evaluation_{slug}.joblib"
             assert artifact_path.exists()
 
             artifact = joblib.load(artifact_path)
@@ -408,7 +403,7 @@ class TestEvaluationArtifactsTrainingOnly:
             X_test = analysis.data.iloc[analysis.test_indices][list(cfg.features)]
             preds = model.predict(X_test)
 
-            pred_file = output_dir / f"holdout_predictions_{slug}.csv"
+            pred_file = out_dir / f"holdout_predictions_{slug}.csv"
             exported_preds = pd.read_csv(pred_file)["Predicted_Y"].values
 
             np.testing.assert_array_equal(preds, exported_preds)
@@ -443,19 +438,19 @@ class TestHoldoutPredictionExports:
         )
 
         analysis = ClassificationAnalysis(cfg)
-        analysis.grids = minimal_grids
         analysis.load()
         analysis.create_chronological_split()
-        analysis.build_models()
+        analysis.build_models(grid_overrides=minimal_grids)
         analysis.tune_on_training_only()
         analysis.evaluate_untouched_holdout()
 
         test_indices = analysis.test_indices
         test_sequences = analysis.data.iloc[test_indices]["Sequence"].values
 
+        out_dir = analysis.working_output_dir
         for name in analysis.models:
             slug = analysis.slug(name)
-            pred_file = output_dir / f"holdout_predictions_{slug}.csv"
+            pred_file = out_dir / f"holdout_predictions_{slug}.csv"
             preds = pd.read_csv(pred_file)
 
             # Number of rows equals holdout size
@@ -533,17 +528,17 @@ class TestMisclassificationExports:
         )
 
         analysis = ClassificationAnalysis(cfg)
-        analysis.grids = minimal_grids
         analysis.load()
         analysis.create_chronological_split()
-        analysis.build_models()
+        analysis.build_models(grid_overrides=minimal_grids)
         analysis.tune_on_training_only()
         analysis.evaluate_untouched_holdout()
 
+        out_dir = analysis.working_output_dir
         for name in analysis.models:
             slug = analysis.slug(name)
-            pred_file = output_dir / f"holdout_predictions_{slug}.csv"
-            misc_file = output_dir / f"holdout_misclassifications_{slug}.csv"
+            pred_file = out_dir / f"holdout_predictions_{slug}.csv"
+            misc_file = out_dir / f"holdout_misclassifications_{slug}.csv"
 
             preds = pd.read_csv(pred_file)
             miscs = pd.read_csv(misc_file)

@@ -954,49 +954,37 @@ Preprocessing is part of each scikit-learn `Pipeline`. Keep learned transformati
 
 All tracked output paths should be created by `self.path(name)`. This registers the filename for `generated_files.txt`. Direct writes that bypass `self.path()` will not appear in the manifest.
 
-### Automated tests
+### Automated test suite
 
-viClassify includes an extensive automated test suite built with `pytest`.
+viClassify includes a pytest-based automated test suite covering:
 
-#### Test coverage
+- CLI argument validation;
+- chronological split boundaries and partition isolation;
+- preprocessing inside machine-learning pipelines;
+- training-only hyperparameter tuning;
+- holdout metric and export consistency;
+- balanced-accuracy behavior when holdout classes are absent;
+- deterministic model-family ranking and tie-breaking;
+- separation of evaluation and production artifacts;
+- full-data production refitting.
 
-The test suite validates the following core behavior:
-
-- **CLI and configuration validation:** argument parsing, bounds checking, duplicate feature rejection, target leakage prevention, and output policy verification.
-- **Dataset validation:** header sanitization, numeric coercion, missingness and infinity counting, empty label rejection, duplicate row detection, and feature audit generation.
-- **Chronological split isolation:** row position preservation via `Sequence`, test-fraction boundary calculations, disjoint train/test partition guarantees, and holdout class availability warnings.
-- **Preprocessing isolation:** verifying median imputation and standard scaling are fitted inside CV folds without information leakage.
-- **Hyperparameter-tuning isolation:** training-partition CV search mechanics, parameter grid evaluation, and score recording.
-- **Effective CV fold-count behavior:** dynamic reduction of fold counts based on training-partition class counts.
-- **Absent-holdout-class metric behavior:** verified calculation of balanced accuracy and macro recall when reporting classes are missing from the holdout.
-- **Evaluation versus production model boundaries:** ensuring evaluation pipelines use chronological training data only while production pipelines refit on all available records.
-- **Deterministic model-family ranking and tie-breaking:** verification of multi-tier ranking rules (mean score, score std, fit time, alphabetical name).
-- **Log-loss and probability matrix validation:** strict fail-fast validation of probability shapes, finite bounds, row sums, and estimator class order alignment.
-- **Output-directory transaction protection:** staging creation, manifest validation, safe commit/rollback, and protection of input files and system directories.
-- **Artifact, manifest and metadata validation:** verification of `.joblib` contents, `generated_files.txt`, `model_export_manifest.csv`, and `run_metadata.json`.
-- **Binary and multiclass integration workflows:** end-to-end execution on deterministic synthetic datasets.
-
-#### Running the tests
-
-Run all automated tests:
+Run the complete test suite with:
 
 ```bash
 python -m pytest
 ```
 
-Execute fast unit tests excluding integration workflows:
+Run only non-integration tests with:
 
 ```bash
 python -m pytest -m "not integration"
 ```
 
-Execute end-to-end integration tests:
+Run integration tests with:
 
 ```bash
 python -m pytest -m integration
 ```
-
-Note that continuous integration (CI) workflow setup across supported Python versions remains part of future infrastructure development.
 
 ### Code-quality tooling
 
@@ -1147,6 +1135,7 @@ Potential future extensions include:
 - categorical predictors;
 - YAML or TOML configuration;
 - input and source hashing for stronger provenance;
+- expand automated test coverage and add continuous integration;
 - `pyproject.toml` packaging and a `viclassify` console entry point;
 - additional estimators and user-configurable search grids.
 

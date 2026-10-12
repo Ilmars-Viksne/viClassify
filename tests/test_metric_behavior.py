@@ -367,19 +367,14 @@ class TestUnpredictedButPresentClass:
         # balanced_acc = (1.0 + 1.0 + 0.0) / 3 = 2/3 ≈ 0.667
         assert balanced_acc == pytest.approx(2 / 3)
 
-        # sklearn uses lexicographic order for labels: ['B', 'G', 'O']
-        # Precision for B: TP=2, FP=0 -> 1.0
-        # Precision for G: TP=0, FP=0 -> 0.0 (zero_division=0)
-        # Precision for O: TP=2, FP=2 -> 0.5
-        # But sklearn's macro average with labels parameter gives 4/9
-        # This is the actual behavior - we test against the actual computed value
+        # Confusion counts for y_true=[O,O,B,B,G,G], y_pred=[O,O,B,B,O,B]:
+        # For class O: TP=2, FP=1 (G predicted as O), FN=0 -> precision=2/3, recall=2/2=1.0, F1=0.8
+        # For class B: TP=2, FP=1 (G predicted as B), FN=0 -> precision=2/3, recall=2/2=1.0, F1=0.8
+        # For class G: TP=0, FP=0, FN=2 (predicted as O and B) -> precision=0.0, recall=0.0, F1=0.0
+        # Macro precision = (2/3 + 2/3 + 0) / 3 = 4/9
         assert macro_prec == pytest.approx(4 / 9)
 
-        # F1 for B: 2*1.0*1.0/(1.0+1.0) = 1.0
-        # F1 for G: 0
-        # F1 for O: 2*0.5*1.0/(0.5+1.0) = 2/3
-        # macro_f1 = (1.0 + 0.0 + 2/3) / 3 = (5/3) / 3 = 5/9 ≈ 0.556
-        # But sklearn's macro average with labels parameter gives 8/15
+        # Macro F1 = (0.8 + 0.8 + 0.0) / 3 = 1.6 / 3 = 8/15
         assert macro_f1 == pytest.approx(8 / 15)
 
         # No warning or exception
