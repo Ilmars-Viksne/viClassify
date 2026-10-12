@@ -11,6 +11,8 @@ from sklearn.metrics import (
     recall_score,
 )
 
+from viclassify_cli import validate_probability_matrix
+
 
 class TestPerfectPrediction:
     """Tests for perfect prediction metrics."""
@@ -458,6 +460,152 @@ class TestProbabilityRowsSumToOne:
 
         sums = y_proba.sum(axis=1)
         np.testing.assert_allclose(sums, 1.0, rtol=1e-10)
+
+
+class TestValidateProbabilityMatrix:
+    """Tests for validate_probability_matrix and log-loss validation policies."""
+
+    def test_valid_binary_probabilities(self):
+        """Test valid binary probabilities pass validation."""
+        y_true = np.array(["O", "F", "O"])
+        probabilities = np.array([[0.8, 0.2], [0.1, 0.9], [0.7, 0.3]])
+        estimator_classes = ["O", "F"]
+
+        # Should not raise
+        validate_probability_matrix(
+            y_true,
+            probabilities,
+            estimator_classes,
+            model_name="TestModel",
+        )
+
+    def test_valid_multiclass_probabilities(self):
+        """Test valid multiclass probabilities pass validation."""
+        y_true = np.array(["B", "G", "M", "O"])
+        probabilities = np.array(
+            [
+                [0.7, 0.1, 0.1, 0.1],
+                [0.1, 0.8, 0.05, 0.05],
+                [0.05, 0.05, 0.8, 0.1],
+                [0.1, 0.1, 0.1, 0.7],
+            ]
+        )
+        estimator_classes = ["B", "G", "M", "O"]
+
+        # Should not raise
+        validate_probability_matrix(
+            y_true,
+            probabilities,
+            estimator_classes,
+            model_name="TestModel",
+        )
+
+    def test_holdout_missing_one_estimator_class(self):
+        """Test holdout missing one estimator class still validates if included in labels."""
+        y_true = np.array(["B", "M", "O"])  # 'G' absent from holdout
+        probabilities = np.array(
+            [
+                [0.7, 0.1, 0.1, 0.1],
+                [0.05, 0.05, 0.8, 0.1],
+                [0.1, 0.1, 0.1, 0.7],
+            ]
+        )
+        estimator_classes = ["B", "G", "M", "O"]
+
+        # Should pass validation
+        validate_probability_matrix(
+            y_true,
+            probabilities,
+            estimator_classes,
+            model_name="TestModel",
+        )
+
+        loss = log_loss(y_true, probabilities, labels=estimator_classes)
+        assert np.isfinite(loss)
+
+    def test_wrong_probability_column_count(self):
+        """Test mismatch in probability column count raises ValueError."""
+        y_true = np.array(["O", "F"])
+        probabilities = np.array([[0.8, 0.1, 0.1], [0.1, 0.8, 0.1]])
+        estimator_classes = ["O", "F"]
+
+        with pytest.raises(ValueError, match="column count"):
+            validate_probability_matrix(
+                y_true,
+                probabilities,
+                estimator_classes,
+                model_name="TestModel",
+            )
+
+    def test_nonfinite_probability(self):
+        """Test nonfinite probability (NaN or Inf) raises ValueError."""
+        y_true = np.array(["O", "F"])
+        probabilities = np.array([[np.nan, 0.5], [0.1, 0.9]])
+        estimator_classes = ["O", "F"]
+
+        with pytest.raises(ValueError, match="nonfinite"):
+            validate_probability_matrix(
+                y_true,
+                probabilities,
+                estimator_classes,
+                model_name="TestModel",
+            )
+
+    def test_negative_probability(self):
+        """Test negative probability raises ValueError."""
+        y_true = np.array(["O", "F"])
+        probabilities = np.array([[-0.1, 1.1], [0.1, 0.9]])
+        estimator_classes = ["O", "F"]
+
+        with pytest.raises(ValueError, match="out of bounds"):
+            validate_probability_matrix(
+                y_true,
+                probabilities,
+                estimator_classes,
+                model_name="TestModel",
+            )
+
+    def test_probability_greater_than_one(self):
+        """Test probability > 1 raises ValueError."""
+        y_true = np.array(["O", "F"])
+        probabilities = np.array([[1.2, -0.2], [0.1, 0.9]])
+        estimator_classes = ["O", "F"]
+
+        with pytest.raises(ValueError, match="out of bounds"):
+            validate_probability_matrix(
+                y_true,
+                probabilities,
+                estimator_classes,
+                model_name="TestModel",
+            )
+
+    def test_row_sum_not_approximately_one(self):
+        """Test row sum not equaling 1.0 raises ValueError."""
+        y_true = np.array(["O", "F"])
+        probabilities = np.array([[0.5, 0.4], [0.1, 0.9]])  # Row 1 sums to 0.9
+        estimator_classes = ["O", "F"]
+
+        with pytest.raises(ValueError, match="row sums"):
+            validate_probability_matrix(
+                y_true,
+                probabilities,
+                estimator_classes,
+                model_name="TestModel",
+            )
+
+    def test_unknown_true_label(self):
+        """Test true label missing from estimator classes raises ValueError."""
+        y_true = np.array(["O", "UNKNOWN"])
+        probabilities = np.array([[0.8, 0.2], [0.1, 0.9]])
+        estimator_classes = ["O", "F"]
+
+        with pytest.raises(ValueError, match="missing from estimator classes"):
+            validate_probability_matrix(
+                y_true,
+                probabilities,
+                estimator_classes,
+                model_name="TestModel",
+            )
 
 
 class TestPredictionConfidenceAndMargin:

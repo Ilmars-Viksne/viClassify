@@ -231,7 +231,7 @@ class TestExportedSplitAssignments:
         analysis.create_chronological_split()
 
         # Read exported assignments
-        assignments_file = output_dir / "chronological_split_assignments.csv"
+        assignments_file = analysis.active_output_dir / "chronological_split_assignments.csv"
         assignments = pd.read_csv(assignments_file)
 
         # Verify every sequence appears exactly once
