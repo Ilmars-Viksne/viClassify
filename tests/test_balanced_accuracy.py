@@ -13,8 +13,16 @@ def test_balanced_accuracy_all_classes_present():
     classes = ["O", "B", "G", "M"]
     y_true = np.array(["O", "O", "B", "B", "G", "G", "M", "M"])
     y_pred = np.array(["O", "B", "B", "B", "G", "M", "M", "O"])
+    y_proba = np.ones((len(y_true), len(classes))) / len(classes)
 
-    # Expected: macro recall over all classes
+    metrics = ClassificationAnalysis.calculate_holdout_metrics(
+        y_true=y_true,
+        y_pred=y_pred,
+        probabilities=y_proba,
+        reporting_classes=classes,
+        estimator_classes=classes,
+    )
+
     expected = recall_score(
         y_true,
         y_pred,
@@ -23,18 +31,8 @@ def test_balanced_accuracy_all_classes_present():
         zero_division=0,
     )
 
-    # Calculate using the same logic as the updated implementation
-    macro_recall = recall_score(
-        y_true,
-        y_pred,
-        labels=classes,
-        average="macro",
-        zero_division=0,
-    )
-
-    assert macro_recall == pytest.approx(expected)
-    # balanced_accuracy should equal macro_recall
-    assert macro_recall == pytest.approx(macro_recall)
+    assert metrics["balanced_accuracy"] == pytest.approx(expected)
+    assert metrics["balanced_accuracy"] == pytest.approx(metrics["macro_recall"])
 
 
 def test_balanced_accuracy_one_class_absent():
@@ -42,26 +40,19 @@ def test_balanced_accuracy_one_class_absent():
     classes = ["O", "B", "G", "M"]
     y_true = np.array(["O", "O", "B", "B", "M", "M"])
     y_pred = np.array(["O", "B", "B", "B", "M", "O"])
+    y_proba = np.ones((len(y_true), len(classes))) / len(classes)
 
-    # Expected recalls:
-    # recall(O) = 1/2 = 0.5
-    # recall(B) = 2/2 = 1.0
-    # recall(G) = 0/0 = 0 (zero_division=0)
-    # recall(M) = 1/2 = 0.5
-    # balanced_accuracy = (0.5 + 1.0 + 0.0 + 0.5) / 4 = 0.5
-    expected = 0.5
-
-    macro_recall = recall_score(
-        y_true,
-        y_pred,
-        labels=classes,
-        average="macro",
-        zero_division=0,
+    metrics = ClassificationAnalysis.calculate_holdout_metrics(
+        y_true=y_true,
+        y_pred=y_pred,
+        probabilities=y_proba,
+        reporting_classes=classes,
+        estimator_classes=classes,
     )
 
-    assert macro_recall == pytest.approx(expected)
-    # balanced_accuracy should equal macro_recall
-    assert macro_recall == pytest.approx(expected)
+    expected = 0.5
+    assert metrics["balanced_accuracy"] == pytest.approx(expected)
+    assert metrics["balanced_accuracy"] == pytest.approx(metrics["macro_recall"])
 
 
 def test_balanced_accuracy_multiple_classes_absent():
@@ -69,28 +60,19 @@ def test_balanced_accuracy_multiple_classes_absent():
     classes = ["O", "B", "G", "M", "K", "L"]
     y_true = np.array(["O", "O", "B", "B"])
     y_pred = np.array(["O", "B", "B", "B"])
+    y_proba = np.ones((len(y_true), len(classes))) / len(classes)
 
-    # Expected recalls:
-    # recall(O) = 1/2 = 0.5
-    # recall(B) = 2/2 = 1.0
-    # recall(G) = 0/0 = 0
-    # recall(M) = 0/0 = 0
-    # recall(K) = 0/0 = 0
-    # recall(L) = 0/0 = 0
-    # balanced_accuracy = (0.5 + 1.0 + 0.0 + 0.0 + 0.0 + 0.0) / 6 = 1.5/6 = 0.25
-    expected = 0.25
-
-    macro_recall = recall_score(
-        y_true,
-        y_pred,
-        labels=classes,
-        average="macro",
-        zero_division=0,
+    metrics = ClassificationAnalysis.calculate_holdout_metrics(
+        y_true=y_true,
+        y_pred=y_pred,
+        probabilities=y_proba,
+        reporting_classes=classes,
+        estimator_classes=classes,
     )
 
-    assert macro_recall == pytest.approx(expected)
-    # balanced_accuracy should equal macro_recall
-    assert macro_recall == pytest.approx(expected)
+    expected = 0.25
+    assert metrics["balanced_accuracy"] == pytest.approx(expected)
+    assert metrics["balanced_accuracy"] == pytest.approx(metrics["macro_recall"])
 
 
 def test_balanced_accuracy_binary_classification():
@@ -98,24 +80,19 @@ def test_balanced_accuracy_binary_classification():
     classes = ["O", "F"]
     y_true = np.array(["O", "O", "F", "F"])
     y_pred = np.array(["O", "F", "F", "O"])
+    y_proba = np.ones((len(y_true), len(classes))) / len(classes)
 
-    # Expected recalls:
-    # recall(O) = 1/2 = 0.5
-    # recall(F) = 1/2 = 0.5
-    # balanced_accuracy = (0.5 + 0.5) / 2 = 0.5
-    expected = 0.5
-
-    macro_recall = recall_score(
-        y_true,
-        y_pred,
-        labels=classes,
-        average="macro",
-        zero_division=0,
+    metrics = ClassificationAnalysis.calculate_holdout_metrics(
+        y_true=y_true,
+        y_pred=y_pred,
+        probabilities=y_proba,
+        reporting_classes=classes,
+        estimator_classes=classes,
     )
 
-    assert macro_recall == pytest.approx(expected)
-    # balanced_accuracy should equal macro_recall
-    assert macro_recall == pytest.approx(expected)
+    expected = 0.5
+    assert metrics["balanced_accuracy"] == pytest.approx(expected)
+    assert metrics["balanced_accuracy"] == pytest.approx(metrics["macro_recall"])
 
 
 def test_balanced_accuracy_binary_one_class_absent():
@@ -123,39 +100,26 @@ def test_balanced_accuracy_binary_one_class_absent():
     classes = ["O", "F"]
     y_true = np.array(["O", "O", "O"])
     y_pred = np.array(["O", "O", "O"])
+    y_proba = np.ones((len(y_true), len(classes))) / len(classes)
 
-    # Expected recalls:
-    # recall(O) = 3/3 = 1.0
-    # recall(F) = 0/0 = 0
-    # balanced_accuracy = (1.0 + 0.0) / 2 = 0.5
-    expected = 0.5
-
-    macro_recall = recall_score(
-        y_true,
-        y_pred,
-        labels=classes,
-        average="macro",
-        zero_division=0,
+    metrics = ClassificationAnalysis.calculate_holdout_metrics(
+        y_true=y_true,
+        y_pred=y_pred,
+        probabilities=y_proba,
+        reporting_classes=classes,
+        estimator_classes=classes,
     )
 
-    assert macro_recall == pytest.approx(expected)
-    # balanced_accuracy should equal macro_recall
-    assert macro_recall == pytest.approx(expected)
+    expected = 0.5
+    assert metrics["balanced_accuracy"] == pytest.approx(expected)
+    assert metrics["balanced_accuracy"] == pytest.approx(metrics["macro_recall"])
 
 
 @pytest.mark.integration
-def test_evaluate_untouched_holdout_integration(minimal_grids):
+def test_evaluate_untouched_holdout_integration(minimal_grids, tmp_path):
     """Integration test for evaluate_untouched_holdout with missing class."""
     import json
-    import os
-    import shutil
-    from pathlib import Path
 
-    # Create a small dataset with 4 classes, but holdout will miss one (G)
-    # We need at least one of each class in training (first 75%)
-    # With 20 rows and test_fraction=0.25, split = 15, holdout = 5 rows
-    # Training: rows 0-14 (15 rows), Holdout: rows 15-19 (5 rows)
-    # Put G only in training, not in holdout
     data = """X1,X2,X3,X4,X5,X6,X7,Y
 1.0,2.0,3.0,4.0,5.0,6.0,7.0,O
 1.1,2.1,3.1,4.1,5.1,6.1,7.1,O
@@ -179,63 +143,48 @@ def test_evaluate_untouched_holdout_integration(minimal_grids):
 5.3,6.3,7.3,8.3,9.3,10.3,11.3,M
 """
 
-    # Use a fixed test directory in the project
-    test_dir = os.path.join(os.path.dirname(__file__), "..", "test_integration_output")
-    test_dir = os.path.abspath(test_dir)
+    data_file = tmp_path / "test_data.csv"
+    output_dir = tmp_path / "output"
 
-    # Clean up any previous run
-    if os.path.exists(test_dir):
-        shutil.rmtree(test_dir, ignore_errors=True)
+    data_file.write_text(data)
 
-    os.makedirs(test_dir, exist_ok=True)
+    cfg = Config(
+        data=data_file,
+        output=output_dir,
+        target="Y",
+        features=("X1", "X2", "X3", "X4", "X5", "X6", "X7"),
+        class_order=("O", "B", "G", "M"),
+        test_fraction=0.25,  # Last 5 rows (O, B, M, M) - no G in holdout
+        cv_folds=2,
+        random_state=42,
+        n_jobs=1,
+        permutation_repeats=1,
+        dpi=100,
+        selection_metric="macro_f1",
+    )
 
-    data_file = Path(os.path.join(test_dir, "test_data.csv"))
-    output_dir = Path(os.path.join(test_dir, "output"))
+    analysis = ClassificationAnalysis(cfg)
+    analysis.load()
+    analysis.create_chronological_split()
+    analysis.build_models(grid_overrides=minimal_grids)
+    analysis.run()  # Run the full pipeline
 
-    try:
-        with open(data_file, "w") as f:
-            f.write(data)
+    # Check the holdout metrics
+    holdout_metrics = pd.read_csv(output_dir / "chronological_holdout_metrics.csv")
 
-        cfg = Config(
-            data=data_file,
-            output=output_dir,
-            target="Y",
-            features=("X1", "X2", "X3", "X4", "X5", "X6", "X7"),
-            class_order=("O", "B", "G", "M"),
-            test_fraction=0.25,  # Last 5 rows (O, B, M, M) - no G in holdout
-            cv_folds=2,
-            random_state=42,
-            n_jobs=1,
-            permutation_repeats=1,
-            dpi=100,
-            selection_metric="macro_f1",
-        )
+    # All models should have balanced_accuracy == macro_recall
+    for _, row in holdout_metrics.iterrows():
+        assert row["balanced_accuracy"] == pytest.approx(row["macro_recall"])
 
-        analysis = ClassificationAnalysis(cfg)
-        analysis.grids = minimal_grids
-        analysis.run()  # Run the full pipeline to generate all outputs including metadata
+    # Check model_comparison.csv uses the corrected value
+    comparison = pd.read_csv(output_dir / "model_comparison.csv")
+    assert "balanced_accuracy" in comparison.columns
 
-        # Check the holdout metrics
-        holdout_metrics = pd.read_csv(output_dir / "chronological_holdout_metrics.csv")
-
-        # The holdout has O, B, M but no G
-        # All models should have balanced_accuracy == macro_recall
-        for _, row in holdout_metrics.iterrows():
-            assert row["balanced_accuracy"] == pytest.approx(row["macro_recall"])
-
-        # Check model_comparison.csv uses the corrected value
-        comparison = pd.read_csv(output_dir / "model_comparison.csv")
-        assert "balanced_accuracy" in comparison.columns
-
-        # Check run_metadata.json contains the definition
-        with open(output_dir / "run_metadata.json") as f:
-            metadata = json.load(f)
-        assert "balanced_accuracy_definition" in metadata
-        assert (
-            "Macro recall over the complete observed reporting class order"
-            in metadata["balanced_accuracy_definition"]
-        )
-    finally:
-        # Clean up
-        if os.path.exists(test_dir):
-            shutil.rmtree(test_dir, ignore_errors=True)
+    # Check run_metadata.json contains the definition
+    with open(output_dir / "run_metadata.json") as f:
+        metadata = json.load(f)
+    assert "balanced_accuracy_definition" in metadata
+    assert (
+        "Macro recall over the complete observed reporting class order"
+        in metadata["balanced_accuracy_definition"]
+    )

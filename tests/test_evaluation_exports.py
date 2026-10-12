@@ -45,22 +45,22 @@ class TestCombinedHoldoutMetrics:
         )
 
         analysis = ClassificationAnalysis(cfg)
-        analysis.grids = minimal_grids
         analysis.load()
         analysis.create_chronological_split()
-        analysis.build_models()
+        analysis.build_models(grid_overrides=minimal_grids)
         analysis.tune_on_training_only()
         analysis.evaluate_untouched_holdout()
 
+        out_dir = analysis.working_output_dir
         # Read combined metrics
-        combined = pd.read_csv(output_dir / "chronological_holdout_metrics.csv")
+        combined = pd.read_csv(out_dir / "chronological_holdout_metrics.csv")
 
         for _, row in combined.iterrows():
             model_name = row["model"]
             slug = analysis.slug(model_name)
 
             # Read predictions
-            pred_file = output_dir / f"holdout_predictions_{slug}.csv"
+            pred_file = out_dir / f"holdout_predictions_{slug}.csv"
             preds = pd.read_csv(pred_file)
 
             y_true = preds["Y"].values
@@ -139,20 +139,20 @@ class TestPerClassClassificationReport:
         )
 
         analysis = ClassificationAnalysis(cfg)
-        analysis.grids = minimal_grids
         analysis.load()
         analysis.create_chronological_split()
-        analysis.build_models()
+        analysis.build_models(grid_overrides=minimal_grids)
         analysis.tune_on_training_only()
         analysis.evaluate_untouched_holdout()
 
+        out_dir = analysis.working_output_dir
         for name in analysis.models:
             slug = analysis.slug(name)
-            report_file = output_dir / f"holdout_report_{slug}.csv"
+            report_file = out_dir / f"holdout_report_{slug}.csv"
             report = pd.read_csv(report_file, index_col=0)
 
             # Read predictions
-            pred_file = output_dir / f"holdout_predictions_{slug}.csv"
+            pred_file = out_dir / f"holdout_predictions_{slug}.csv"
             preds = pd.read_csv(pred_file)
 
             y_true = preds["Y"].values
@@ -266,18 +266,18 @@ class TestConfusionMatrixConsistency:
         )
 
         analysis = ClassificationAnalysis(cfg)
-        analysis.grids = minimal_grids
         analysis.load()
         analysis.create_chronological_split()
-        analysis.build_models()
+        analysis.build_models(grid_overrides=minimal_grids)
         analysis.tune_on_training_only()
         analysis.evaluate_untouched_holdout()
 
+        out_dir = analysis.working_output_dir
         for name in analysis.models:
             slug = analysis.slug(name)
 
             # Read predictions
-            pred_file = output_dir / f"holdout_predictions_{slug}.csv"
+            pred_file = out_dir / f"holdout_predictions_{slug}.csv"
             preds = pd.read_csv(pred_file)
 
             y_true = preds["Y"].values
@@ -285,7 +285,7 @@ class TestConfusionMatrixConsistency:
             classes = analysis.classes
 
             # Check counts matrix
-            counts_file = output_dir / f"holdout_confusion_matrix_{slug}.csv"
+            counts_file = out_dir / f"holdout_confusion_matrix_{slug}.csv"
             counts = pd.read_csv(counts_file, index_col=0)
 
             expected_counts = confusion_matrix(y_true, y_pred, labels=classes)
@@ -294,7 +294,7 @@ class TestConfusionMatrixConsistency:
             np.testing.assert_array_equal(counts.values, expected_counts)
 
             # Check normalized matrix
-            norm_file = output_dir / f"holdout_confusion_matrix_normalized_{slug}.csv"
+            norm_file = out_dir / f"holdout_confusion_matrix_normalized_{slug}.csv"
             normalized = pd.read_csv(norm_file, index_col=0)
 
             expected_norm = confusion_matrix(
@@ -342,22 +342,25 @@ class TestModelComparisonConsistency:
         )
 
         analysis = ClassificationAnalysis(cfg)
-        analysis.grids = minimal_grids
         analysis.load()
         analysis.create_chronological_split()
-        analysis.build_models()
+        analysis.build_models(grid_overrides=minimal_grids)
         analysis.tune_on_training_only()
         analysis.evaluate_untouched_holdout()
         analysis.refit_and_export_production_models()
+        analysis.write_generated_file_manifest()
+        analysis.validate_manifest()
+        analysis.promote_staging()
 
+        out_dir = analysis.final_output_path
         # Read model comparison
-        comparison = pd.read_csv(output_dir / "model_comparison.csv")
+        comparison = pd.read_csv(out_dir / "model_comparison.csv")
 
         # Read CV summaries
         cv_summary = pd.DataFrame(analysis.search_summaries)
 
         # Read holdout metrics
-        holdout = pd.read_csv(output_dir / "chronological_holdout_metrics.csv")
+        holdout = pd.read_csv(out_dir / "chronological_holdout_metrics.csv")
 
         for _, row in comparison.iterrows():
             model = row["model"]

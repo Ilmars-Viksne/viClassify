@@ -37,10 +37,9 @@ class TestProductionModelsUseAllRows:
         )
 
         analysis = ClassificationAnalysis(cfg)
-        analysis.grids = minimal_grids
         analysis.load()
         analysis.create_chronological_split()
-        analysis.build_models()
+        analysis.build_models(grid_overrides=minimal_grids)
         analysis.tune_on_training_only()
         analysis.evaluate_untouched_holdout()
 
@@ -49,11 +48,15 @@ class TestProductionModelsUseAllRows:
         original_fit = Pipeline.fit
 
         def spy_fit(self, X, y=None, **fit_params):
+            classifier_step = self.named_steps.get("classifier")
+            classifier_name = (
+                classifier_step.__class__.__name__ if classifier_step is not None else "unknown"
+            )
             captured_fits.append(
                 {
                     "X": X.copy(),
                     "y": y.copy() if y is not None else None,
-                    "model_name": getattr(self, "_spy_model_name", "unknown"),
+                    "classifier_name": classifier_name,
                 }
             )
             return original_fit(self, X, y, **fit_params)
@@ -61,8 +64,23 @@ class TestProductionModelsUseAllRows:
         monkeypatch.setattr(Pipeline, "fit", spy_fit)
         analysis.refit_and_export_production_models()
 
-        # Verify production models fitted on all rows
+        # Execute promote_staging if running individual stages to promote files to output_dir
+        analysis.write_generated_file_manifest()
+        analysis.validate_manifest()
+        analysis.promote_staging()
+
         total_rows = len(analysis.data)
+        # Should capture exactly 4 top-level production fits
+        assert len(captured_fits) == 4
+
+        expected_classifiers = {
+            "LogisticRegression",
+            "RandomForestClassifier",
+            "ExtraTreesClassifier",
+            "HistGradientBoostingClassifier",
+        }
+        captured_classifiers = {fit_info["classifier_name"] for fit_info in captured_fits}
+        assert captured_classifiers == expected_classifiers
 
         for fit_info in captured_fits:
             X_fit = fit_info["X"]
@@ -109,18 +127,20 @@ class TestProductionFittingAfterEvaluation:
             selection_metric="macro_f1",
         )
 
-        analysis = ClassificationAnalysis(cfg)
-        analysis.grids = minimal_grids
-        analysis.load()
-        analysis.create_chronological_split()
-        analysis.build_models()
-        analysis.tune_on_training_only()
+        # Create fresh instance to run run() cleanly
+        fresh_analysis = ClassificationAnalysis(cfg)
 
-        # Track stage order
         stage_order = []
 
-        original_evaluate = analysis.evaluate_untouched_holdout
-        original_refit = analysis.refit_and_export_production_models
+        original_build = fresh_analysis.build_models
+
+        def build_with_minimal_grids(grid_overrides=None):
+            return original_build(grid_overrides=minimal_grids)
+
+        fresh_analysis.build_models = build_with_minimal_grids
+
+        original_evaluate = fresh_analysis.evaluate_untouched_holdout
+        original_refit = fresh_analysis.refit_and_export_production_models
 
         def track_evaluate():
             stage_order.append("evaluate_start")
@@ -135,10 +155,10 @@ class TestProductionFittingAfterEvaluation:
             return result
 
         with (
-            patch.object(analysis, "evaluate_untouched_holdout", track_evaluate),
-            patch.object(analysis, "refit_and_export_production_models", track_refit),
+            patch.object(fresh_analysis, "evaluate_untouched_holdout", track_evaluate),
+            patch.object(fresh_analysis, "refit_and_export_production_models", track_refit),
         ):
-            analysis.run()
+            fresh_analysis.run()
 
         # Verify order: evaluate completes before refit begins
         eval_end_idx = stage_order.index("evaluate_end")
@@ -177,20 +197,23 @@ class TestArtifactRolesDistinct:
         )
 
         analysis = ClassificationAnalysis(cfg)
-        analysis.grids = minimal_grids
         analysis.load()
         analysis.create_chronological_split()
-        analysis.build_models()
+        analysis.build_models(grid_overrides=minimal_grids)
         analysis.tune_on_training_only()
         analysis.evaluate_untouched_holdout()
         analysis.refit_and_export_production_models()
+        analysis.write_generated_file_manifest()
+        analysis.validate_manifest()
+        analysis.promote_staging()
 
         import joblib
 
+        out_dir = analysis.final_output_path
         # Check evaluation artifacts
         for name in analysis.models:
             slug = analysis.slug(name)
-            eval_path = output_dir / f"evaluation_{slug}.joblib"
+            eval_path = out_dir / f"evaluation_{slug}.joblib"
             assert eval_path.exists()
 
             eval_artifact = joblib.load(eval_path)
@@ -201,14 +224,14 @@ class TestArtifactRolesDistinct:
         # Check production artifacts
         for name in analysis.models:
             slug = analysis.slug(name)
-            prod_path = output_dir / f"production_{slug}.joblib"
+            prod_path = out_dir / f"production_{slug}.joblib"
             assert prod_path.exists()
 
             prod_artifact = joblib.load(prod_path)
             assert prod_artifact["model_role"] == "production_full_data_refit"
 
         # Check CV-selected production artifact
-        cv_selected_path = output_dir / "cv_selected_production_model.joblib"
+        cv_selected_path = out_dir / "cv_selected_production_model.joblib"
         assert cv_selected_path.exists()
 
         cv_selected_artifact = joblib.load(cv_selected_path)
@@ -218,8 +241,8 @@ class TestArtifactRolesDistinct:
         )
 
         # Verify filenames don't overwrite
-        eval_files = list(output_dir.glob("evaluation_*.joblib"))
-        prod_files = list(output_dir.glob("production_*.joblib"))
+        eval_files = list(out_dir.glob("evaluation_*.joblib"))
+        prod_files = list(out_dir.glob("production_*.joblib"))
         assert len(eval_files) == 4
         assert len(prod_files) == 4
         assert len(set(eval_files).intersection(set(prod_files))) == 0

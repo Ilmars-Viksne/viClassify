@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 import argparse
+import datetime
+import hashlib
 import json
 import platform
 import re
+import shutil
+import sys
+import uuid
 import warnings
+from copy import deepcopy
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, ClassVar
@@ -104,7 +110,21 @@ class ClassificationAnalysis:
 
     def __init__(self, cfg: Config) -> None:
         self.cfg = cfg
-        self.cfg.output.mkdir(parents=True, exist_ok=True)
+        self.final_output_path = cfg.output.resolve()
+
+        run_id = (
+            datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            + "-"
+            + uuid.uuid4().hex[:6]
+        )
+        staging_name = f".{self.final_output_path.name}.staging-{run_id}"
+        self.staging_dir = self.final_output_path.parent / staging_name
+
+        # Create staging directory
+        self.staging_dir.mkdir(parents=True, exist_ok=True)
+
+        # Working output path used by internal methods
+        self.working_output_dir = self.staging_dir
 
         self.df: pd.DataFrame | None = None
         self.classes: list[str] = []
@@ -127,7 +147,87 @@ class ClassificationAnalysis:
         self.cv_selected_score_std: float | None = None
         self.cv_selection_ranking: list[dict[str, Any]] = []
 
+        self.started_at_utc: str | None = None
+        self.completed_at_utc: str | None = None
+
         self.generated_files: set[str] = set()
+
+    @staticmethod
+    def calculate_holdout_metrics(
+        y_true: pd.Series | np.ndarray,
+        y_pred: np.ndarray,
+        probabilities: np.ndarray,
+        reporting_classes: list[str],
+        estimator_classes: list[str],
+    ) -> dict[str, Any]:
+        macro_recall = recall_score(
+            y_true,
+            y_pred,
+            labels=reporting_classes,
+            average="macro",
+            zero_division=0,
+        )
+
+        metrics: dict[str, Any] = {
+            "accuracy": float(
+                accuracy_score(
+                    y_true,
+                    y_pred,
+                )
+            ),
+            "balanced_accuracy": float(macro_recall),
+            "macro_precision": float(
+                precision_score(
+                    y_true,
+                    y_pred,
+                    labels=reporting_classes,
+                    average="macro",
+                    zero_division=0,
+                )
+            ),
+            "macro_recall": float(macro_recall),
+            "macro_f1": float(
+                f1_score(
+                    y_true,
+                    y_pred,
+                    labels=reporting_classes,
+                    average="macro",
+                    zero_division=0,
+                )
+            ),
+            "weighted_f1": float(
+                f1_score(
+                    y_true,
+                    y_pred,
+                    labels=reporting_classes,
+                    average="weighted",
+                    zero_division=0,
+                )
+            ),
+            "mcc": float(
+                matthews_corrcoef(
+                    y_true,
+                    y_pred,
+                )
+            ),
+        }
+
+        try:
+            metrics["log_loss"] = float(
+                log_loss(
+                    y_true,
+                    probabilities,
+                    labels=estimator_classes,
+                )
+            )
+            metrics["log_loss_status"] = "calculated"
+            metrics["log_loss_error"] = ""
+        except ValueError as exc:
+            metrics["log_loss"] = np.nan
+            metrics["log_loss_status"] = "failed"
+            metrics["log_loss_error"] = str(exc)
+
+        return metrics
 
     @property
     def data(self) -> pd.DataFrame:
@@ -250,7 +350,7 @@ class ClassificationAnalysis:
 
     def path(self, name: str) -> Path:
         self.generated_files.add(name)
-        return self.cfg.output / name
+        return self.working_output_dir / name
 
     @staticmethod
     def slug(name: str) -> str:
@@ -924,7 +1024,10 @@ class ClassificationAnalysis:
 
         self.savefig("predictors_and_classes_by_sequence.png")
 
-    def build_models(self) -> None:
+    def build_models(
+        self,
+        grid_overrides: dict[str, dict[str, list[Any]]] | None = None,
+    ) -> None:
         self.heading("6. Building model families")
 
         numeric = ColumnTransformer(
@@ -1091,6 +1194,38 @@ class ClassificationAnalysis:
                 ],
             },
         }
+
+        if grid_overrides is not None:
+            expected = set(self.models)
+            provided = set(grid_overrides)
+
+            missing = sorted(expected - provided)
+            extra = sorted(provided - expected)
+
+            if missing or extra:
+                raise ValueError(
+                    "Grid overrides must exactly match registered model families. "
+                    f"Missing: {missing}; extra: {extra}"
+                )
+
+            for model_name, grid in grid_overrides.items():
+                if not isinstance(grid, dict):
+                    raise ValueError(
+                        f"Grid override for '{model_name}' must be a dictionary"
+                    )
+
+                for param_name, candidates in grid.items():
+                    if not isinstance(param_name, str) or not param_name.strip():
+                        raise ValueError(
+                            f"Grid override for '{model_name}' contains an invalid parameter name: {param_name!r}"
+                        )
+
+                    if not isinstance(candidates, list) or len(candidates) == 0:
+                        raise ValueError(
+                            f"Grid override for '{model_name}' parameter '{param_name}' must be a non-empty list"
+                        )
+
+            self.grids = deepcopy(grid_overrides)
 
     def cv(self, y: pd.Series) -> StratifiedKFold:
         minimum_class_count = int(y.value_counts().min())
@@ -1312,57 +1447,21 @@ class ClassificationAnalysis:
 
             model_classes = list(model.named_steps["classifier"].classes_)
 
-            macro_recall = recall_score(
-                y_test,
-                pred,
-                labels=self.classes,
-                average="macro",
-                zero_division=0,
+            metrics = self.calculate_holdout_metrics(
+                y_true=y_test,
+                y_pred=pred,
+                probabilities=proba,
+                reporting_classes=self.classes,
+                estimator_classes=model_classes,
             )
+            metrics["model"] = name
 
-            metrics = {
-                "model": name,
-                "accuracy": accuracy_score(
-                    y_test,
-                    pred,
-                ),
-                "balanced_accuracy": macro_recall,
-                "macro_precision": precision_score(
-                    y_test,
-                    pred,
-                    labels=self.classes,
-                    average="macro",
-                    zero_division=0,
-                ),
-                "macro_recall": macro_recall,
-                "macro_f1": f1_score(
-                    y_test,
-                    pred,
-                    labels=self.classes,
-                    average="macro",
-                    zero_division=0,
-                ),
-                "weighted_f1": f1_score(
-                    y_test,
-                    pred,
-                    labels=self.classes,
-                    average="weighted",
-                    zero_division=0,
-                ),
-                "mcc": matthews_corrcoef(
-                    y_test,
-                    pred,
-                ),
-            }
-
-            try:
-                metrics["log_loss"] = log_loss(
-                    y_test,
-                    proba,
-                    labels=model_classes,
+            if metrics["log_loss_status"] == "failed":
+                warnings.warn(
+                    f"{name}: log-loss calculation failed: {metrics['log_loss_error']}",
+                    RuntimeWarning,
+                    stacklevel=2,
                 )
-            except ValueError:
-                metrics["log_loss"] = np.nan
 
             self.holdout_rows.append(metrics)
 
@@ -2147,7 +2246,26 @@ class ClassificationAnalysis:
             list(self.cfg.class_order) if self.cfg.class_order else None
         )
 
+        def hash_file(path: Path) -> str:
+            hasher = hashlib.sha256()
+            with path.open("rb") as f:
+                while chunk := f.read(65536):
+                    hasher.update(chunk)
+            return hasher.hexdigest()
+
+        input_sha256 = hash_file(self.cfg.data)
+        source_sha256 = hash_file(Path(__file__).resolve())
+
         payload = {
+            "viclassify_version": "unversioned",
+            "output_schema_version": "1.0",
+            "metadata_schema_version": "1.0",
+            "input_sha256": input_sha256,
+            "source_sha256": source_sha256,
+            "started_at_utc": self.started_at_utc,
+            "completed_at_utc": self.completed_at_utc,
+            "command_line_arguments": sys.argv,
+            "command_line": " ".join(sys.argv),
             "configuration": configuration,
             "observed_reporting_class_order": (self.classes),
             "validation_design": (
@@ -2172,6 +2290,12 @@ class ClassificationAnalysis:
                 "post-evaluation on the chronological "
                 "holdout and should be treated as holdout "
                 "interpretation, not independent training data."
+            ),
+            "balanced_accuracy_is_project_specific": True,
+            "balanced_accuracy_formula": (
+                "macro recall over the complete observed reporting class order, "
+                "with zero recall assigned to reporting classes absent "
+                "from the chronological holdout"
             ),
             "balanced_accuracy_definition": (
                 "Macro recall over the complete observed reporting class order. "
@@ -2219,11 +2343,16 @@ class ClassificationAnalysis:
                     for record in self.cv_selection_ranking
                 ],
             },
+            "operating_system": platform.system(),
+            "platform": platform.platform(),
+            "machine": platform.machine(),
+            "processor": platform.processor(),
             "python": platform.python_version(),
             "numpy": np.__version__,
             "pandas": pd.__version__,
             "scipy": scipy.__version__,
             "scikit_learn": sklearn.__version__,
+            "joblib_version": joblib.__version__,
         }
 
         with self.path("run_metadata.json").open(
@@ -2237,14 +2366,64 @@ class ClassificationAnalysis:
                 ensure_ascii=False,
             )
 
+    def write_run_status(
+        self, status: str, error_info: dict[str, str] | None = None
+    ) -> None:
+        status_file = self.working_output_dir / "run_status.json"
+        payload: dict[str, Any] = {
+            "status": status,
+            "started_at_utc": self.started_at_utc,
+            "completed_at_utc": self.completed_at_utc,
+        }
+        if error_info:
+            payload["error"] = error_info
+
+        with status_file.open("w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)
+
+        self.generated_files.add("run_status.json")
+
+    def validate_manifest(self) -> None:
+        missing = []
+        not_files = []
+
+        # Validate that all files recorded in self.generated_files exist and are valid.
+        for name in sorted(self.generated_files):
+            rel_path = Path(name)
+            if rel_path.is_absolute() or ".." in rel_path.parts:
+                raise RuntimeError(
+                    f"Manifest entry is invalid or unsafe: '{name}'"
+                )
+
+            candidate = self.working_output_dir / name
+            try:
+                resolved_candidate = candidate.resolve()
+                resolved_staging = self.working_output_dir.resolve()
+                resolved_candidate.relative_to(resolved_staging)
+            except ValueError:
+                raise RuntimeError(
+                    f"Manifest path resolves outside staging directory: '{name}'"
+                )
+
+            if not candidate.exists():
+                missing.append(name)
+            elif not candidate.is_file():
+                not_files.append(name)
+
+        if missing or not_files:
+            raise RuntimeError(
+                "Generated-file validation failed. "
+                f"Missing: {missing}; not regular files: {not_files}"
+            )
+
     def write_generated_file_manifest(
         self,
     ) -> None:
         manifest_name = "generated_files.txt"
 
-        files = sorted(self.generated_files | {manifest_name})
+        files = sorted(self.generated_files | {manifest_name, "run_status.json"})
 
-        manifest_path = self.cfg.output / manifest_name
+        manifest_path = self.working_output_dir / manifest_name
 
         manifest_path.write_text(
             "\n".join(files) + "\n",
@@ -2253,23 +2432,72 @@ class ClassificationAnalysis:
 
         self.generated_files.add(manifest_name)
 
+    def promote_staging(self) -> None:
+        # Backup-and-swap sequence
+        target = self.final_output_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+
+        backup = None
+        if target.exists():
+            backup_id = uuid.uuid4().hex[:6]
+            backup = target.parent / f".{target.name}.backup-{backup_id}"
+            target.rename(backup)
+
+        try:
+            self.staging_dir.rename(target)
+        except Exception:
+            # Restore backup if rename failed
+            if backup and backup.exists():
+                if target.exists():
+                    shutil.rmtree(target, ignore_errors=True)
+                backup.rename(target)
+            raise
+        else:
+            if backup and backup.exists():
+                shutil.rmtree(backup, ignore_errors=True)
+
     def run(self) -> None:
-        self.load()
-        self.audit_and_describe()
-        self.correlations()
-        self.exploratory_plots()
-        self.create_chronological_split()
-        self.build_models()
-        self.tune_on_training_only()
-        self.evaluate_untouched_holdout()
-        self.export_evaluation_logistic_outputs()
-        self.refit_and_export_production_models()
-        self.metadata()
-        self.write_generated_file_manifest()
+        self.started_at_utc = (
+            datetime.datetime.now(datetime.timezone.utc).isoformat()
+        )
+        self.write_run_status("running")
+
+        try:
+            self.load()
+            self.audit_and_describe()
+            self.correlations()
+            self.exploratory_plots()
+            self.create_chronological_split()
+            self.build_models()
+            self.tune_on_training_only()
+            self.evaluate_untouched_holdout()
+            self.export_evaluation_logistic_outputs()
+            self.refit_and_export_production_models()
+
+            self.completed_at_utc = (
+                datetime.datetime.now(datetime.timezone.utc).isoformat()
+            )
+            self.metadata()
+            self.write_generated_file_manifest()
+            self.validate_manifest()
+            self.write_run_status("completed")
+            self.promote_staging()
+        except Exception as exc:
+            try:
+                self.write_run_status(
+                    "failed",
+                    error_info={
+                        "type": exc.__class__.__name__,
+                        "message": str(exc),
+                    },
+                )
+            except Exception:
+                pass
+            raise
 
         self.heading("Analysis completed")
 
-        print(f"Results saved to: {self.cfg.output.resolve()}")
+        print(f"Results saved to: {self.final_output_path}")
 
 
 def parse_args() -> argparse.Namespace:

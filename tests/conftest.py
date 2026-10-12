@@ -1,6 +1,5 @@
 """Pytest configuration and fixtures for viClassify tests."""
 
-import shutil
 from pathlib import Path
 from typing import Any
 
@@ -147,34 +146,18 @@ def imbalanced_dataset() -> str:
     return "X1,X2,Y\n" + "\n".join(rows)
 
 
-# Use a fixed test directory in the project to avoid sandbox tmp_path issues
-TEST_BASE_DIR = Path(__file__).parent / "test_temp"
-
-
-@pytest.fixture(scope="session", autouse=True)
-def setup_test_dirs():
-    """Set up test directories."""
-    if TEST_BASE_DIR.exists():
-        shutil.rmtree(TEST_BASE_DIR, ignore_errors=True)
-    TEST_BASE_DIR.mkdir(parents=True, exist_ok=True)
-    yield
-    # Cleanup after all tests
-    if TEST_BASE_DIR.exists():
-        shutil.rmtree(TEST_BASE_DIR, ignore_errors=True)
-
-
 @pytest.fixture
-def test_data_dir() -> Path:
+def test_data_dir(tmp_path: Path) -> Path:
     """Create a test data directory."""
-    test_dir = TEST_BASE_DIR / "data"
-    test_dir.mkdir(parents=True, exist_ok=True)
-    return test_dir
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    return data_dir
 
 
 @pytest.fixture
-def test_output_dir() -> Path:
+def test_output_dir(tmp_path: Path) -> Path:
     """Create a test output directory."""
-    output_dir = TEST_BASE_DIR / "output"
+    output_dir = tmp_path / "output"
     output_dir.mkdir(parents=True, exist_ok=True)
     return output_dir
 

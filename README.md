@@ -953,24 +953,37 @@ Preprocessing is part of each scikit-learn `Pipeline`. Keep learned transformati
 
 All tracked output paths should be created by `self.path(name)`. This registers the filename for `generated_files.txt`. Direct writes that bypass `self.path()` will not appear in the manifest.
 
-### Suggested development checks
+### Automated test suite
 
-The repository does not currently include an automated test suite. Recommended tests include:
+viClassify includes a pytest-based automated test suite covering:
 
-- CLI rejection of invalid fractions, fold counts, worker counts, DPI, duplicate features, target leakage, and invalid thresholds.
-- Rejection of missing files, empty datasets, duplicate columns, reserved `Sequence`, missing target labels, one-class targets, and all-missing features.
-- Numeric coercion and infinity replacement.
-- Preservation of chronological split boundaries.
-- Absence of holdout rows from grid search.
-- Automatic fold-count reduction.
-- Exact artifact keys and estimator probability order.
-- Correct original-unit Logistic Regression conversion.
-- Expected output manifest for binary and multiclass fixtures.
-- Reproducibility with a fixed seed.
-- Behavior when the holdout lacks one or more classes.
-- Headless plotting under the configured Matplotlib `Agg` backend.
+- CLI argument validation;
+- chronological split boundaries and partition isolation;
+- preprocessing inside machine-learning pipelines;
+- training-only hyperparameter tuning;
+- holdout metric and export consistency;
+- balanced-accuracy behavior when holdout classes are absent;
+- deterministic model-family ranking and tie-breaking;
+- separation of evaluation and production artifacts;
+- full-data production refitting.
 
-A practical test stack would use `pytest`, `tmp_path`, small deterministic CSV fixtures, and `subprocess.run()` for end-to-end CLI tests.
+Run the complete test suite with:
+
+```bash
+python -m pytest
+```
+
+Run only non-integration tests with:
+
+```bash
+python -m pytest -m "not integration"
+```
+
+Run integration tests with:
+
+```bash
+python -m pytest -m integration
+```
 
 ### Code-quality tooling
 
@@ -1120,7 +1133,7 @@ Potential future extensions include:
 - categorical predictors;
 - YAML or TOML configuration;
 - input and source hashing for stronger provenance;
-- automated tests and continuous integration;
+- expand automated test coverage and add continuous integration;
 - `pyproject.toml` packaging and a `viclassify` console entry point;
 - additional estimators and user-configurable search grids.
 

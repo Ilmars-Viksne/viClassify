@@ -51,7 +51,6 @@ def create_analysis(tmp_path, minimal_grids, dataset_text):
     )
 
     analysis = ClassificationAnalysis(cfg)
-    analysis.grids = minimal_grids
     return analysis, output_dir
 
 
@@ -381,7 +380,7 @@ def test_11_holdout_results_cannot_change_cv_rank(
     analysis, _ = create_analysis(tmp_path, minimal_grids, binary_chronological_dataset)
     analysis.load()
     analysis.create_chronological_split()
-    analysis.build_models()
+    analysis.build_models(grid_overrides=minimal_grids)
 
     analysis.search_summaries = [
         {
@@ -587,6 +586,9 @@ def test_20_manifest_matches_ranking(
     analysis, output_dir = create_analysis(
         tmp_path, minimal_grids, binary_chronological_dataset
     )
+    analysis.load()
+    analysis.create_chronological_split()
+    analysis.build_models(grid_overrides=minimal_grids)
     analysis.run()
 
     manifest_df = pd.read_csv(output_dir / "model_export_manifest.csv")
@@ -633,6 +635,9 @@ def test_21_artifact_metadata_matches_ranking(
     analysis, output_dir = create_analysis(
         tmp_path, minimal_grids, binary_chronological_dataset
     )
+    analysis.load()
+    analysis.create_chronological_split()
+    analysis.build_models(grid_overrides=minimal_grids)
     analysis.run()
 
     artifact = joblib.load(output_dir / "cv_selected_production_model.joblib")
@@ -656,6 +661,9 @@ def test_22_run_metadata_contains_complete_ranking(
     analysis, output_dir = create_analysis(
         tmp_path, minimal_grids, binary_chronological_dataset
     )
+    analysis.load()
+    analysis.create_chronological_split()
+    analysis.build_models(grid_overrides=minimal_grids)
     analysis.run()
 
     with (output_dir / "run_metadata.json").open("r", encoding="utf-8") as f:
@@ -686,6 +694,9 @@ def test_23_family_and_alias_artifacts_agree(
     analysis, output_dir = create_analysis(
         tmp_path, minimal_grids, binary_chronological_dataset
     )
+    analysis.load()
+    analysis.create_chronological_split()
+    analysis.build_models(grid_overrides=minimal_grids)
     analysis.run()
 
     selected_name = analysis.cv_selected_model_name
