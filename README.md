@@ -230,7 +230,8 @@ python viclassify_cli.py \
 | Argument | Required | Default | Validation and purpose |
 |---|---:|---|---|
 | `--data` | Yes | None | Input CSV path. The file must exist when analysis starts. |
-| `--output` | No | `viclassify_results` | Output directory, created with parent directories when needed. Existing files with matching names are overwritten. |
+| `--output` | No | `viclassify_results` | Target output directory, created with parent directories when needed. |
+| `--output-policy` | No | `fail` | Output directory collision policy: `fail` refuses to start if target exists and is nonempty; `replace` replaces existing output upon successful completion. |
 | `--target` | No | `Y` | Nonempty target-column name. It must not also occur in `--features`. |
 | `--features` | No | `X1 X2 X3 X4 X5 X6 X7` | One or more ordered, nonempty, distinct predictor-column names. |
 | `--class-order` | No | Detected and sorted | Optional distinct, nonempty reporting labels. Unobserved requested labels produce a warning and are omitted. Observed labels not listed are appended in sorted order. |
@@ -576,7 +577,7 @@ For predicted probability `p_i,y_i` assigned to the true class:
 log_loss = -(1 / N) * sum_i log(p_i,y_i)
 ```
 
-Log loss rewards calibrated, confident correct predictions and strongly penalizes confident errors. If the holdout does not contain all estimator classes, viClassify still supplies the estimator class order to `log_loss`. If scikit-learn rejects the calculation, the exported value is `NaN`.
+Log loss rewards calibrated, confident correct predictions and strongly penalizes confident errors. Prior to log-loss evaluation, viClassify strictly validates the predicted probability matrix (shapes, finiteness, bounds in [0, 1], row sums equal to 1.0, and presence of all observed true labels in the estimator class order). If probability validation or log-loss calculation fails, a descriptive `RuntimeError` is raised with full model and evaluation context.
 
 ### CV-to-holdout gap
 
@@ -1126,7 +1127,8 @@ Potential future extensions include:
 
 - grouped and stratified-group cross-validation;
 - blocked, rolling, or expanding-window temporal validation;
-- nested cross-validation;
+- continuous integration across supported Python versions;
+- expanded regression and end-to-end test coverage;
 - probability calibration and calibration plots;
 - decision-threshold optimization;
 - cost-sensitive Histogram Gradient Boosting;

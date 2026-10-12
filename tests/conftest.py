@@ -163,19 +163,19 @@ def test_output_dir(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def temp_data_file(test_data_dir: Path, request: pytest.FixtureRequest) -> Path:
+def temp_data_file(tmp_path: Path, request: pytest.FixtureRequest) -> Path:
     """Create a temporary CSV file from a dataset fixture."""
     dataset_name = request.param
     dataset = request.getfixturevalue(dataset_name)
-    data_file = test_data_dir / f"{dataset_name}.csv"
-    data_file.write_text(dataset)
+    data_file = tmp_path / f"{dataset_name}.csv"
+    data_file.write_text(dataset, encoding="utf-8")
     return data_file
 
 
 @pytest.fixture
-def temp_output_dir(test_output_dir: Path) -> Path:
+def temp_output_dir(tmp_path: Path) -> Path:
     """Create a temporary output directory."""
-    output_dir = test_output_dir / "run"
+    output_dir = tmp_path / "run"
     output_dir.mkdir(parents=True, exist_ok=True)
     return output_dir
 
