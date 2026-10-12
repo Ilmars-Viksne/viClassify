@@ -50,7 +50,9 @@ class TestProductionModelsUseAllRows:
         def spy_fit(self, X, y=None, **fit_params):
             classifier_step = self.named_steps.get("classifier")
             classifier_name = (
-                classifier_step.__class__.__name__ if classifier_step is not None else "unknown"
+                classifier_step.__class__.__name__
+                if classifier_step is not None
+                else "unknown"
             )
             captured_fits.append(
                 {
@@ -79,7 +81,9 @@ class TestProductionModelsUseAllRows:
             "ExtraTreesClassifier",
             "HistGradientBoostingClassifier",
         }
-        captured_classifiers = {fit_info["classifier_name"] for fit_info in captured_fits}
+        captured_classifiers = {
+            fit_info["classifier_name"] for fit_info in captured_fits
+        }
         assert captured_classifiers == expected_classifiers
 
         for fit_info in captured_fits:
@@ -156,7 +160,9 @@ class TestProductionFittingAfterEvaluation:
 
         with (
             patch.object(fresh_analysis, "evaluate_untouched_holdout", track_evaluate),
-            patch.object(fresh_analysis, "refit_and_export_production_models", track_refit),
+            patch.object(
+                fresh_analysis, "refit_and_export_production_models", track_refit
+            ),
         ):
             fresh_analysis.run()
 

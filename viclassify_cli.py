@@ -196,18 +196,24 @@ class OutputTransaction:
         try:
             home = Path.home().resolve()
             if final == home:
-                raise ValueError(f"Output path '{final}' cannot be the user home directory.")
+                raise ValueError(
+                    f"Output path '{final}' cannot be the user home directory."
+                )
         except RuntimeError:
             pass
 
         # 3. Current working directory
         cwd = Path.cwd().resolve()
         if final == cwd:
-            raise ValueError(f"Output path '{final}' cannot be the current working directory.")
+            raise ValueError(
+                f"Output path '{final}' cannot be the current working directory."
+            )
 
         # 4. Input file path
         if final == self.data_path:
-            raise ValueError(f"Output path '{final}' cannot be equal to input CSV path.")
+            raise ValueError(
+                f"Output path '{final}' cannot be equal to input CSV path."
+            )
 
         # 5. Input file parent directory
         if final == self.data_path.parent:
@@ -218,23 +224,27 @@ class OutputTransaction:
         # 6. Check if final_path is a symlink pointing outside
         if final.is_symlink():
             target = final.readlink()
-            raise ValueError(f"Output path '{final}' is a symlink pointing to '{target}'.")
+            raise ValueError(
+                f"Output path '{final}' is a symlink pointing to '{target}'."
+            )
 
     def validate_staged_output(self, generated_files: set[str]) -> None:
         """Validate staged artifacts before committing."""
         if not self.staging_path.exists():
-            raise RuntimeError(f"Staging directory '{self.staging_path}' does not exist.")
+            raise RuntimeError(
+                f"Staging directory '{self.staging_path}' does not exist."
+            )
 
         manifest_file = self.staging_path / "generated_files.txt"
         if not manifest_file.exists():
             raise RuntimeError(
-                f"Mandatory manifest file 'generated_files.txt' is missing from staging."
+                "Mandatory manifest file 'generated_files.txt' is missing from staging."
             )
 
         metadata_file = self.staging_path / "run_metadata.json"
         if not metadata_file.exists():
             raise RuntimeError(
-                f"Mandatory metadata file 'run_metadata.json' is missing from staging."
+                "Mandatory metadata file 'run_metadata.json' is missing from staging."
             )
 
         try:
@@ -276,7 +286,7 @@ class OutputTransaction:
                 if self.backup_path.exists():
                     shutil.rmtree(self.backup_path, ignore_errors=True)
                 os.rename(self.final_path, self.backup_path)
-            else: # fail policy with existing empty directory
+            else:  # fail policy with existing empty directory
                 os.rmdir(self.final_path)
 
         try:
@@ -354,6 +364,16 @@ class ClassificationAnalysis:
         self.cfg = cfg
         self.final_output_path = cfg.output.resolve()
 
+        # Check output policy early
+        target = self.final_output_path
+        if target.exists():
+            is_empty = not any(target.iterdir())
+            if self.cfg.output_policy == "fail" and not is_empty:
+                raise RuntimeError(
+                    f"Output directory '{target}' exists and is nonempty. "
+                    "Use --output-policy replace to overwrite existing results."
+                )
+
         run_id = (
             datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
             + "-"
@@ -362,7 +382,7 @@ class ClassificationAnalysis:
         staging_name = f".{self.final_output_path.name}.staging-{run_id}"
         self.staging_dir = self.final_output_path.parent / staging_name
 
-        # Create staging directory
+        # Create staging directory after policy check
         self.staging_dir.mkdir(parents=True, exist_ok=True)
 
         # Working output path used by internal methods
@@ -1452,7 +1472,7 @@ class ClassificationAnalysis:
 
             for model_name, grid in grid_overrides.items():
                 if not isinstance(grid, dict):
-                    raise ValueError(
+                    raise TypeError(
                         f"Grid override for '{model_name}' must be a dictionary"
                     )
 
@@ -2633,9 +2653,7 @@ class ClassificationAnalysis:
         for name in sorted(self.generated_files):
             rel_path = Path(name)
             if rel_path.is_absolute() or ".." in rel_path.parts:
-                raise RuntimeError(
-                    f"Manifest entry is invalid or unsafe: '{name}'"
-                )
+                raise RuntimeError(f"Manifest entry is invalid or unsafe: '{name}'")
 
             candidate = self.working_output_dir / name
             try:
@@ -2679,6 +2697,15 @@ class ClassificationAnalysis:
         target = self.final_output_path
         target.parent.mkdir(parents=True, exist_ok=True)
 
+        # Check output policy
+        if target.exists():
+            is_empty = not any(target.iterdir())
+            if self.cfg.output_policy == "fail" and not is_empty:
+                raise RuntimeError(
+                    f"Output directory '{target}' exists and is nonempty. "
+                    "Use --output-policy replace to overwrite existing results."
+                )
+
         backup = None
         if target.exists():
             backup_id = uuid.uuid4().hex[:6]
@@ -2699,9 +2726,7 @@ class ClassificationAnalysis:
                 shutil.rmtree(backup, ignore_errors=True)
 
     def run(self) -> None:
-        self.started_at_utc = (
-            datetime.datetime.now(datetime.timezone.utc).isoformat()
-        )
+        self.started_at_utc = datetime.datetime.now(datetime.timezone.utc).isoformat()
         self.write_run_status("running")
 
         try:
@@ -2716,9 +2741,9 @@ class ClassificationAnalysis:
             self.export_evaluation_logistic_outputs()
             self.refit_and_export_production_models()
 
-            self.completed_at_utc = (
-                datetime.datetime.now(datetime.timezone.utc).isoformat()
-            )
+            self.completed_at_utc = datetime.datetime.now(
+                datetime.timezone.utc
+            ).isoformat()
             self.metadata()
             self.write_generated_file_manifest()
             self.validate_manifest()
@@ -2733,8 +2758,11 @@ class ClassificationAnalysis:
                         "message": str(exc),
                     },
                 )
-            except Exception:
+            except OSError:
                 pass
+            # Clean up staging directory on failure
+            if self.staging_dir.exists():
+                shutil.rmtree(self.staging_dir, ignore_errors=True)
             raise
 
         self.heading("Analysis completed")

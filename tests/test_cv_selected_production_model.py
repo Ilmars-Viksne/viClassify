@@ -508,6 +508,7 @@ def test_15_rank_duplicate_model_names_fail():
 def test_16_rank_invalid_numeric_values_fail(col, bad_val):
     """Test 16: invalid numeric values fail clearly."""
     analysis = make_mock_analysis()
+    # Create DataFrame with object dtype to allow mixed types
     df = pd.DataFrame(
         [
             {
@@ -516,7 +517,8 @@ def test_16_rank_invalid_numeric_values_fail(col, bad_val):
                 "cv_macro_f1_std": 0.05,
                 "mean_fit_time": 0.1,
             },
-        ]
+        ],
+        dtype=object,
     )
     df.loc[0, col] = bad_val
     with pytest.raises(ValueError):

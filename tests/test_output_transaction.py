@@ -14,7 +14,9 @@ class TestOutputTransaction:
     def test_default_refusal_when_nonempty(self, tmp_path, minimal_grids):
         """Test default output-policy 'fail' refuses to run if final directory is nonempty."""
         data_file = tmp_path / "data.csv"
-        data_file.write_text("X1,X2,Y\n1,10,O\n2,20,F\n3,30,O\n4,40,F\n", encoding="utf-8")
+        data_file.write_text(
+            "X1,X2,Y\n1,10,O\n2,20,F\n3,30,O\n4,40,F\n", encoding="utf-8"
+        )
 
         output_dir = tmp_path / "existing_results"
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -69,8 +71,7 @@ class TestOutputTransaction:
         """Test successful analysis run commits staging to final directory."""
         data_file = tmp_path / "data.csv"
         data_file.write_text(
-            "X1,X2,Y\n1,10,O\n2,20,F\n3,30,O\n4,40,F\n"
-            "5,50,O\n6,60,F\n7,70,O\n8,80,F\n",
+            "X1,X2,Y\n1,10,O\n2,20,F\n3,30,O\n4,40,F\n5,50,O\n6,60,F\n7,70,O\n8,80,F\n",
             encoding="utf-8",
         )
         output_dir = tmp_path / "final_results"
@@ -144,8 +145,7 @@ class TestOutputTransaction:
         """Test a failed run with policy='replace' leaves prior final directory untouched."""
         data_file = tmp_path / "data.csv"
         data_file.write_text(
-            "X1,X2,Y\n1,10,O\n2,20,F\n3,30,O\n4,40,F\n"
-            "5,50,O\n6,60,F\n7,70,O\n8,80,F\n",
+            "X1,X2,Y\n1,10,O\n2,20,F\n3,30,O\n4,40,F\n5,50,O\n6,60,F\n7,70,O\n8,80,F\n",
             encoding="utf-8",
         )
         output_dir = tmp_path / "results"
@@ -206,8 +206,7 @@ class TestOutputTransaction:
         """Test policy='replace' removes stale files from previous run."""
         data_file = tmp_path / "data.csv"
         data_file.write_text(
-            "X1,X2,Y\n1,10,O\n2,20,F\n3,30,O\n4,40,F\n"
-            "5,50,O\n6,60,F\n7,70,O\n8,80,F\n",
+            "X1,X2,Y\n1,10,O\n2,20,F\n3,30,O\n4,40,F\n5,50,O\n6,60,F\n7,70,O\n8,80,F\n",
             encoding="utf-8",
         )
         output_dir = tmp_path / "results"
