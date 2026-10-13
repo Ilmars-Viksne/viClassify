@@ -182,40 +182,48 @@ class TestSelectedConfigCVTrainingOnly:
         analysis.create_chronological_split()
         analysis.build_models(grid_overrides=minimal_grids)
 
-        # Spy on cross_validate
-        captured_cv = []
-        original_cross_validate = None
+        # Spy on GridSearchCV.fit (used by tune_on_training_only)
+        captured_fits = []
+        original_fit = None
 
-        def spy_cross_validate(estimator, X, y, **kwargs):
-            captured_cv.append({"X": X.copy(), "y": y.copy(), "estimator": estimator})
-            return original_cross_validate(estimator, X, y, **kwargs)
+        def spy_fit(self, X, y, **kwargs):
+            captured_fits.append(
+                {
+                    "X": X.copy(),
+                    "y": y.copy(),
+                    "estimator": self,
+                }
+            )
+            return original_fit(self, X, y, **kwargs)
 
-        from viclassify_cli import cross_validate
+        from sklearn.model_selection import GridSearchCV
 
-        original_cross_validate = cross_validate
+        original_fit = GridSearchCV.fit
 
-        with patch("viclassify_cli.cross_validate", spy_cross_validate):
+        with patch.object(GridSearchCV, "fit", spy_fit):
             analysis.tune_on_training_only()
 
-        # Verify cross_validate received only training data
+        # Verify GridSearchCV.fit received only training data
         train_size = len(analysis.train_indices)
         test_start = analysis.test_indices[0]
 
-        for cv_info in captured_cv:
-            X_cv = cv_info["X"]
-            y_cv = cv_info["y"]
+        for fit_info in captured_fits:
+            X_fit = fit_info["X"]
+            y_fit = fit_info["y"]
 
-            assert len(X_cv) == train_size
-            assert len(y_cv) == train_size
+            assert len(X_fit) == train_size
+            assert len(y_fit) == train_size
 
-            if "X1" in X_cv.columns:
-                max_x1 = X_cv["X1"].max()
+            if "X1" in X_fit.columns:
+                max_x1 = X_fit["X1"].max()
                 assert max_x1 < test_start, "Holdout row found in selected-config CV"
 
             # Verify estimator has selected hyperparameters
-            estimator = cv_info["estimator"]
-            assert hasattr(estimator, "named_steps")
-            assert "classifier" in estimator.named_steps
+            estimator = fit_info["estimator"]
+            # GridSearchCV stores the best estimator in best_estimator_
+            best_estimator = estimator.best_estimator_
+            assert hasattr(best_estimator, "named_steps")
+            assert "classifier" in best_estimator.named_steps
 
 
 @pytest.mark.integration

@@ -297,9 +297,7 @@ class OutputTransaction:
         for rel_file in sorted(manifest_entries):
             rel_path = Path(rel_file)
             if rel_path.is_absolute() or ".." in rel_path.parts:
-                raise RuntimeError(
-                    f"Manifest path is unsafe or absolute: '{rel_file}'"
-                )
+                raise RuntimeError(f"Manifest path is unsafe or absolute: '{rel_file}'")
 
             if "staging-" in rel_file or "backup-" in rel_file:
                 raise RuntimeError(
@@ -456,6 +454,7 @@ class ClassificationAnalysis:
 
     def compute_hashes(self) -> tuple[str, str]:
         if self.input_sha256 is None or self.source_sha256 is None:
+
             def hash_file(path: Path) -> str:
                 hasher = hashlib.sha256()
                 with path.open("rb") as f:
@@ -573,7 +572,9 @@ class ClassificationAnalysis:
             metrics["log_loss_error"] = ""
         except (ValueError, TypeError, Exception) as exc:
             proba_arr = np.asarray(probabilities)
-            shape_str = str(proba_arr.shape) if hasattr(proba_arr, "shape") else "unknown"
+            shape_str = (
+                str(proba_arr.shape) if hasattr(proba_arr, "shape") else "unknown"
+            )
             raise RuntimeError(
                 f"Log-loss calculation failed for model family '{model_name}' on evaluation partition '{evaluation_partition}'. "
                 f"Estimator classes: {list(estimator_classes)}; probability matrix shape: {shape_str}. "
@@ -1965,7 +1966,9 @@ class ClassificationAnalysis:
                 "best_parameters": self.best_params[name],
                 "random_state": self.cfg.random_state,
                 "training_partition": "chronological_training_partition",
-                "row_count_fitted": len(self.train_indices) if self.train_indices is not None else 0,
+                "row_count_fitted": len(self.train_indices)
+                if self.train_indices is not None
+                else 0,
             },
         }
 
@@ -2805,7 +2808,10 @@ class ClassificationAnalysis:
             self.transaction.commit(self.generated_files)
         except Exception as exc:
             try:
-                if self.working_output_dir is not None and self.working_output_dir.exists():
+                if (
+                    self.working_output_dir is not None
+                    and self.working_output_dir.exists()
+                ):
                     self.write_run_status(
                         "failed",
                         error_info={

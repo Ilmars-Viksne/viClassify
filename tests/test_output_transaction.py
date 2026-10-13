@@ -65,7 +65,7 @@ class TestOutputTransaction:
         assert not output_dir.exists()
         assert not txn.staging_path.exists()
 
-        analysis = ClassificationAnalysis(cfg, transaction=txn)
+        ClassificationAnalysis(cfg, transaction=txn)
         assert not output_dir.exists()
         assert not txn.staging_path.exists()
         assert len(list(tmp_path.glob(".*.staging-*"))) == 0
@@ -81,7 +81,9 @@ class TestOutputTransaction:
 
         (staging / "run_metadata.json").write_text("{}", encoding="utf-8")
         # Manifest missing file 'extra.txt' which is in generated_files set
-        (staging / "generated_files.txt").write_text("generated_files.txt\nrun_status.json\n", encoding="utf-8")
+        (staging / "generated_files.txt").write_text(
+            "generated_files.txt\nrun_status.json\n", encoding="utf-8"
+        )
         (staging / "run_status.json").write_text("{}", encoding="utf-8")
         (staging / "extra.txt").write_text("extra", encoding="utf-8")
 
