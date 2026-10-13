@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from viclassify_cli import ClassificationAnalysis, Config, parse_args
+
 
 class TestCLIValidation:
     """Tests for CLI validation related to isolation."""
@@ -303,22 +305,33 @@ class TestCLIValidation:
         assert result.returncode != 0
         assert "invalid choice" in result.stderr.lower()
 
-    @pytest.mark.integration
-    def test_valid_cli_runs(self, tmp_path):
-        """Test valid CLI arguments run without error."""
-        # 12 rows, 2 classes (O and F, 6 each), test_fraction=0.25 -> split=9 (training=9, holdout=3)
-        # Training (rows 0-8) has 5 O's and 4 F's -> rarest class has 4 >= 2
-        rows = [f"{i},{i * 10},{'O' if i % 2 == 0 else 'F'}" for i in range(12)]
-        data = "X1,X2,Y\n" + "\n".join(rows) + "\n"
-        data_file = tmp_path / "data.csv"
-        data_file.write_text(data, encoding="utf-8")
-        output_dir = tmp_path / "cli_test"
-
+    def test_cli_version_flag(self):
+        """Test --version CLI flag returns application version."""
         result = subprocess.run(
             [
                 sys.executable,
                 "-m",
                 "viclassify_cli",
+                "--version",
+            ],
+            capture_output=True,
+            text=True,
+            cwd=Path(__file__).parent.parent,
+            check=False,
+        )
+        assert result.returncode == 0
+        assert "0.4.0" in result.stdout
+
+    def test_cli_parsing(self, tmp_path, monkeypatch):
+        """Test CLI parse_args correctly parses options."""
+        data_file = tmp_path / "data.csv"
+        data_file.write_text("X1,X2,Y\n1,10,O\n2,20,F\n", encoding="utf-8")
+        output_dir = tmp_path / "cli_out"
+
+        monkeypatch.setattr(
+            "sys.argv",
+            [
+                "viclassify_cli.py",
                 "--data",
                 str(data_file),
                 "--output",
@@ -339,12 +352,42 @@ class TestCLIValidation:
                 "--selection-metric",
                 "macro_f1",
             ],
-            check=False,
-            capture_output=True,
-            text=True,
-            cwd=Path(__file__).parent.parent,
-            timeout=180,
         )
 
-        # Should run successfully (may have warnings but not errors)
-        assert result.returncode == 0, f"CLI failed: {result.stderr}"
+        args = parse_args()
+        assert args.data == data_file
+        assert args.output == output_dir
+        assert args.features == ["X1", "X2"]
+        assert args.test_fraction == 0.25
+        assert args.cv_folds == 2
+
+    @pytest.mark.integration
+    def test_valid_cli_runs(self, tmp_path, minimal_grids):
+        """Test valid CLI run executes end-to-end using reduced grid."""
+        rows = [f"{i},{i * 10},{'O' if i % 2 == 0 else 'F'}" for i in range(12)]
+        data = "X1,X2,Y\n" + "\n".join(rows) + "\n"
+        data_file = tmp_path / "data.csv"
+        data_file.write_text(data, encoding="utf-8")
+        output_dir = tmp_path / "cli_test"
+
+        cfg = Config(
+            data=data_file,
+            output=output_dir,
+            target="Y",
+            features=("X1", "X2"),
+            class_order=None,
+            test_fraction=0.25,
+            cv_folds=2,
+            random_state=42,
+            n_jobs=1,
+            permutation_repeats=1,
+            dpi=50,
+            selection_metric="macro_f1",
+        )
+
+        analysis = ClassificationAnalysis(cfg, grid_overrides=minimal_grids)
+        analysis.run()
+
+        assert output_dir.exists()
+        assert (output_dir / "generated_files.txt").exists()
+        assert (output_dir / "chronological_holdout_metrics.csv").exists()
