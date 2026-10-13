@@ -44,70 +44,75 @@ class TestCombinedHoldoutMetrics:
             selection_metric="macro_f1",
         )
 
-        analysis = ClassificationAnalysis(cfg)
-        analysis.load()
-        analysis.create_chronological_split()
-        analysis.build_models(grid_overrides=minimal_grids)
-        analysis.tune_on_training_only()
-        analysis.evaluate_untouched_holdout()
+        analysis = ClassificationAnalysis(cfg, grid_overrides=minimal_grids)
+        analysis.prepare_output()
+        try:
+            analysis.load()
+            analysis.create_chronological_split()
+            analysis.build_models(grid_overrides=minimal_grids)
+            analysis.tune_on_training_only()
+            analysis.evaluate_untouched_holdout()
 
-        out_dir = analysis.working_output_dir
-        # Read combined metrics
-        combined = pd.read_csv(out_dir / "chronological_holdout_metrics.csv")
+            out_dir = analysis.working_output_dir
+            # Read combined metrics
+            combined = pd.read_csv(out_dir / "chronological_holdout_metrics.csv")
 
-        for _, row in combined.iterrows():
-            model_name = row["model"]
-            slug = analysis.slug(model_name)
+            for _, row in combined.iterrows():
+                model_name = row["model"]
+                slug = analysis.slug(model_name)
 
-            # Read predictions
-            pred_file = out_dir / f"holdout_predictions_{slug}.csv"
-            preds = pd.read_csv(pred_file)
+                # Read predictions
+                pred_file = out_dir / f"holdout_predictions_{slug}.csv"
+                preds = pd.read_csv(pred_file)
 
-            y_true = preds["Y"].values
-            y_pred = preds["Predicted_Y"].values
-            classes = analysis.classes
+                y_true = preds["Y"].values
+                y_pred = preds["Predicted_Y"].values
+                classes = analysis.classes
 
-            # Get probability columns
-            proba_cols = [c for c in preds.columns if c.startswith("Probability_")]
-            y_proba = preds[proba_cols].values
+                # Get probability columns
+                proba_cols = [c for c in preds.columns if c.startswith("Probability_")]
+                y_proba = preds[proba_cols].values
 
-            # Recompute metrics
-            expected = {
-                "accuracy": accuracy_score(y_true, y_pred),
-                "balanced_accuracy": recall_score(
-                    y_true, y_pred, labels=classes, average="macro", zero_division=0
-                ),
-                "macro_precision": precision_score(
-                    y_true, y_pred, labels=classes, average="macro", zero_division=0
-                ),
-                "macro_recall": recall_score(
-                    y_true, y_pred, labels=classes, average="macro", zero_division=0
-                ),
-                "macro_f1": f1_score(
-                    y_true, y_pred, labels=classes, average="macro", zero_division=0
-                ),
-                "weighted_f1": f1_score(
-                    y_true, y_pred, labels=classes, average="weighted", zero_division=0
-                ),
-                "mcc": matthews_corrcoef(y_true, y_pred),
-            }
+                # Recompute metrics
+                expected = {
+                    "accuracy": accuracy_score(y_true, y_pred),
+                    "balanced_accuracy": recall_score(
+                        y_true, y_pred, labels=classes, average="macro", zero_division=0
+                    ),
+                    "macro_precision": precision_score(
+                        y_true, y_pred, labels=classes, average="macro", zero_division=0
+                    ),
+                    "macro_recall": recall_score(
+                        y_true, y_pred, labels=classes, average="macro", zero_division=0
+                    ),
+                    "macro_f1": f1_score(
+                        y_true, y_pred, labels=classes, average="macro", zero_division=0
+                    ),
+                    "weighted_f1": f1_score(
+                        y_true, y_pred, labels=classes, average="weighted", zero_division=0
+                    ),
+                    "mcc": matthews_corrcoef(y_true, y_pred),
+                }
 
-            try:
-                expected["log_loss"] = log_loss(y_true, y_proba, labels=classes)
-            except ValueError:
-                expected["log_loss"] = np.nan
+                try:
+                    expected["log_loss"] = log_loss(y_true, y_proba, labels=classes)
+                except ValueError:
+                    expected["log_loss"] = np.nan
 
-            # Compare
-            for metric, expected_val in expected.items():
-                actual_val = row[metric]
-                if np.isnan(expected_val):
-                    assert np.isnan(actual_val), (
-                        f"{model_name}: {metric} expected NaN but got {actual_val}"
-                    )
-                else:
-                    assert actual_val == pytest.approx(expected_val, rel=1e-6), (
-                        f"{model_name}: {metric} mismatch: expected {expected_val}, got {actual_val}"
-                    )
+                # Compare
+                for metric, expected_val in expected.items():
+                    actual_val = row[metric]
+                    if np.isnan(expected_val):
+                        assert np.isnan(actual_val), (
+                            f"{model_name}: {metric} expected NaN but got {actual_val}"
+                        )
+                    else:
+                        assert actual_val == pytest.approx(expected_val, rel=1e-6), (
+                            f"{model_name}: {metric} mismatch: expected {expected_val}, got {actual_val}"
+                        )
+        finally:
+            if analysis.transaction is not None:
+                analysis.transaction.rollback()
 
 
 @pytest.mark.integration
@@ -138,103 +143,108 @@ class TestPerClassClassificationReport:
             selection_metric="macro_f1",
         )
 
-        analysis = ClassificationAnalysis(cfg)
-        analysis.load()
-        analysis.create_chronological_split()
-        analysis.build_models(grid_overrides=minimal_grids)
-        analysis.tune_on_training_only()
-        analysis.evaluate_untouched_holdout()
+        analysis = ClassificationAnalysis(cfg, grid_overrides=minimal_grids)
+        analysis.prepare_output()
+        try:
+            analysis.load()
+            analysis.create_chronological_split()
+            analysis.build_models(grid_overrides=minimal_grids)
+            analysis.tune_on_training_only()
+            analysis.evaluate_untouched_holdout()
 
-        out_dir = analysis.working_output_dir
-        for name in analysis.models:
-            slug = analysis.slug(name)
-            report_file = out_dir / f"holdout_report_{slug}.csv"
-            report = pd.read_csv(report_file, index_col=0)
+            out_dir = analysis.working_output_dir
+            for name in analysis.models:
+                slug = analysis.slug(name)
+                report_file = out_dir / f"holdout_report_{slug}.csv"
+                report = pd.read_csv(report_file, index_col=0)
 
-            # Read predictions
-            pred_file = out_dir / f"holdout_predictions_{slug}.csv"
-            preds = pd.read_csv(pred_file)
+                # Read predictions
+                pred_file = out_dir / f"holdout_predictions_{slug}.csv"
+                preds = pd.read_csv(pred_file)
 
-            y_true = preds["Y"].values
-            y_pred = preds["Predicted_Y"].values
-            classes = analysis.classes
+                y_true = preds["Y"].values
+                y_pred = preds["Predicted_Y"].values
+                classes = analysis.classes
 
-            # Check per-class metrics
-            for cls in classes:
-                if cls in report.index:
-                    row = report.loc[cls]
-                    # Support
-                    expected_support = np.sum(y_true == cls)
-                    assert row["support"] == expected_support
+                # Check per-class metrics
+                for cls in classes:
+                    if cls in report.index:
+                        row = report.loc[cls]
+                        # Support
+                        expected_support = np.sum(y_true == cls)
+                        assert row["support"] == expected_support
 
-                    # Precision, recall, F1
-                    from sklearn.metrics import precision_recall_fscore_support
+                        # Precision, recall, F1
+                        from sklearn.metrics import precision_recall_fscore_support
 
-                    prec, rec, f1, _supp = precision_recall_fscore_support(
-                        y_true, y_pred, labels=[cls], average=None, zero_division=0
+                        prec, rec, f1, _supp = precision_recall_fscore_support(
+                            y_true, y_pred, labels=[cls], average=None, zero_division=0
+                        )
+                        assert row["precision"] == pytest.approx(prec[0])
+                        assert row["recall"] == pytest.approx(rec[0])
+                        assert row["f1-score"] == pytest.approx(f1[0])
+
+                # Check macro avg
+                if "macro avg" in report.index:
+                    macro_row = report.loc["macro avg"]
+                    assert macro_row["precision"] == pytest.approx(
+                        precision_score(
+                            y_true, y_pred, labels=classes, average="macro", zero_division=0
+                        )
                     )
-                    assert row["precision"] == pytest.approx(prec[0])
-                    assert row["recall"] == pytest.approx(rec[0])
-                    assert row["f1-score"] == pytest.approx(f1[0])
+                    assert macro_row["recall"] == pytest.approx(
+                        recall_score(
+                            y_true, y_pred, labels=classes, average="macro", zero_division=0
+                        )
+                    )
+                    assert macro_row["f1-score"] == pytest.approx(
+                        f1_score(
+                            y_true, y_pred, labels=classes, average="macro", zero_division=0
+                        )
+                    )
 
-            # Check macro avg
-            if "macro avg" in report.index:
-                macro_row = report.loc["macro avg"]
-                assert macro_row["precision"] == pytest.approx(
-                    precision_score(
-                        y_true, y_pred, labels=classes, average="macro", zero_division=0
+                # Check weighted avg
+                if "weighted avg" in report.index:
+                    weighted_row = report.loc["weighted avg"]
+                    assert weighted_row["precision"] == pytest.approx(
+                        precision_score(
+                            y_true,
+                            y_pred,
+                            labels=classes,
+                            average="weighted",
+                            zero_division=0,
+                        )
                     )
-                )
-                assert macro_row["recall"] == pytest.approx(
-                    recall_score(
-                        y_true, y_pred, labels=classes, average="macro", zero_division=0
+                    assert weighted_row["recall"] == pytest.approx(
+                        recall_score(
+                            y_true,
+                            y_pred,
+                            labels=classes,
+                            average="weighted",
+                            zero_division=0,
+                        )
                     )
-                )
-                assert macro_row["f1-score"] == pytest.approx(
-                    f1_score(
-                        y_true, y_pred, labels=classes, average="macro", zero_division=0
+                    assert weighted_row["f1-score"] == pytest.approx(
+                        f1_score(
+                            y_true,
+                            y_pred,
+                            labels=classes,
+                            average="weighted",
+                            zero_division=0,
+                        )
                     )
-                )
 
-            # Check weighted avg
-            if "weighted avg" in report.index:
-                weighted_row = report.loc["weighted avg"]
-                assert weighted_row["precision"] == pytest.approx(
-                    precision_score(
-                        y_true,
-                        y_pred,
-                        labels=classes,
-                        average="weighted",
-                        zero_division=0,
-                    )
-                )
-                assert weighted_row["recall"] == pytest.approx(
-                    recall_score(
-                        y_true,
-                        y_pred,
-                        labels=classes,
-                        average="weighted",
-                        zero_division=0,
-                    )
-                )
-                assert weighted_row["f1-score"] == pytest.approx(
-                    f1_score(
-                        y_true,
-                        y_pred,
-                        labels=classes,
-                        average="weighted",
-                        zero_division=0,
-                    )
-                )
-
-            # Ensure absent reporting classes remain represented
-            # (if a class is absent from holdout, it should still appear in report with support=0)
-            for cls in classes:
-                assert cls in report.index or cls in [
-                    "accuracy",
-                    "macro avg",
-                    "weighted avg",
-                ]
+                # Ensure absent reporting classes remain represented
+                # (if a class is absent from holdout, it should still appear in report with support=0)
+                for cls in classes:
+                    assert cls in report.index or cls in [
+                        "accuracy",
+                        "macro avg",
+                        "weighted avg",
+                    ]
+        finally:
+            if analysis.transaction is not None:
+                analysis.transaction.rollback()
 
 
 @pytest.mark.integration
@@ -265,52 +275,57 @@ class TestConfusionMatrixConsistency:
             selection_metric="macro_f1",
         )
 
-        analysis = ClassificationAnalysis(cfg)
-        analysis.load()
-        analysis.create_chronological_split()
-        analysis.build_models(grid_overrides=minimal_grids)
-        analysis.tune_on_training_only()
-        analysis.evaluate_untouched_holdout()
+        analysis = ClassificationAnalysis(cfg, grid_overrides=minimal_grids)
+        analysis.prepare_output()
+        try:
+            analysis.load()
+            analysis.create_chronological_split()
+            analysis.build_models(grid_overrides=minimal_grids)
+            analysis.tune_on_training_only()
+            analysis.evaluate_untouched_holdout()
 
-        out_dir = analysis.working_output_dir
-        for name in analysis.models:
-            slug = analysis.slug(name)
+            out_dir = analysis.working_output_dir
+            for name in analysis.models:
+                slug = analysis.slug(name)
 
-            # Read predictions
-            pred_file = out_dir / f"holdout_predictions_{slug}.csv"
-            preds = pd.read_csv(pred_file)
+                # Read predictions
+                pred_file = out_dir / f"holdout_predictions_{slug}.csv"
+                preds = pd.read_csv(pred_file)
 
-            y_true = preds["Y"].values
-            y_pred = preds["Predicted_Y"].values
-            classes = analysis.classes
+                y_true = preds["Y"].values
+                y_pred = preds["Predicted_Y"].values
+                classes = analysis.classes
 
-            # Check counts matrix
-            counts_file = out_dir / f"holdout_confusion_matrix_{slug}.csv"
-            counts = pd.read_csv(counts_file, index_col=0)
+                # Check counts matrix
+                counts_file = out_dir / f"holdout_confusion_matrix_{slug}.csv"
+                counts = pd.read_csv(counts_file, index_col=0)
 
-            expected_counts = confusion_matrix(y_true, y_pred, labels=classes)
-            assert counts.index.tolist() == [f"Actual_{c}" for c in classes]
-            assert counts.columns.tolist() == [f"Predicted_{c}" for c in classes]
-            np.testing.assert_array_equal(counts.values, expected_counts)
+                expected_counts = confusion_matrix(y_true, y_pred, labels=classes)
+                assert counts.index.tolist() == [f"Actual_{c}" for c in classes]
+                assert counts.columns.tolist() == [f"Predicted_{c}" for c in classes]
+                np.testing.assert_array_equal(counts.values, expected_counts)
 
-            # Check normalized matrix
-            norm_file = out_dir / f"holdout_confusion_matrix_normalized_{slug}.csv"
-            normalized = pd.read_csv(norm_file, index_col=0)
+                # Check normalized matrix
+                norm_file = out_dir / f"holdout_confusion_matrix_normalized_{slug}.csv"
+                normalized = pd.read_csv(norm_file, index_col=0)
 
-            expected_norm = confusion_matrix(
-                y_true, y_pred, labels=classes, normalize="true"
-            )
-            assert normalized.index.tolist() == [f"Actual_{c}" for c in classes]
-            assert normalized.columns.tolist() == [f"Predicted_{c}" for c in classes]
-            np.testing.assert_allclose(normalized.values, expected_norm, rtol=1e-6)
+                expected_norm = confusion_matrix(
+                    y_true, y_pred, labels=classes, normalize="true"
+                )
+                assert normalized.index.tolist() == [f"Actual_{c}" for c in classes]
+                assert normalized.columns.tolist() == [f"Predicted_{c}" for c in classes]
+                np.testing.assert_allclose(normalized.values, expected_norm, rtol=1e-6)
 
-            # Handle absent true classes - rows should still exist with NaN or 0
-            for i, cls in enumerate(classes):
-                if cls not in y_true:
-                    # Row should exist but be NaN (normalize="true" gives NaN for absent classes)
-                    assert np.all(np.isnan(expected_norm[i, :])) or np.all(
-                        expected_norm[i, :] == 0
-                    )
+                # Handle absent true classes - rows should still exist with NaN or 0
+                for i, cls in enumerate(classes):
+                    if cls not in y_true:
+                        # Row should exist but be NaN (normalize="true" gives NaN for absent classes)
+                        assert np.all(np.isnan(expected_norm[i, :])) or np.all(
+                            expected_norm[i, :] == 0
+                        )
+        finally:
+            if analysis.transaction is not None:
+                analysis.transaction.rollback()
 
 
 @pytest.mark.integration

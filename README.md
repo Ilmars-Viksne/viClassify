@@ -904,7 +904,7 @@ complete output directory
 requirements or environment lock file
 ```
 
-Every run records input file hash (`input_sha256`), source code hash (`source_sha256`), UTC start and completion timestamps, platform/OS info, and package versions in both `run_metadata.json` and individual `.joblib` model artifact `provenance` blocks for complete scientific auditability. Staging directory commits use a same-filesystem `Path.rename()` atomic swap pattern.
+Every completed run records run-level start and completion timestamps in `run_metadata.json`. Each `.joblib` artifact contains its own `created_at_utc` and `fitted_at_utc` timestamps, together with the run ID, input hash, source hash, platform information, and package versions. Staging directory commits use a same-filesystem `Path.rename()` atomic swap pattern.
 
 ## Developer guide
 
@@ -1135,7 +1135,6 @@ Potential future extensions include:
 - cost-sensitive Histogram Gradient Boosting;
 - categorical predictors;
 - YAML or TOML configuration;
-- expand automated test coverage and add continuous integration;
 - `pyproject.toml` packaging and a `viclassify` console entry point;
 - additional estimators and user-configurable search grids.
 

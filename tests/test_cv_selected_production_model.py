@@ -377,48 +377,53 @@ def test_11_holdout_results_cannot_change_cv_rank(
 ):
     """Test 11: holdout results cannot change CV rank."""
     analysis, _ = create_analysis(tmp_path, minimal_grids, binary_chronological_dataset)
-    analysis.load()
-    analysis.create_chronological_split()
-    analysis.build_models(grid_overrides=minimal_grids)
+    analysis.prepare_output()
+    try:
+        analysis.load()
+        analysis.create_chronological_split()
+        analysis.build_models(grid_overrides=minimal_grids)
 
-    analysis.search_summaries = [
-        {
-            "model": "Logistic Regression",
-            "cv_macro_f1_mean": 0.50,
-            "cv_macro_f1_std": 0.05,
-            "mean_fit_time": 0.1,
-        },
-        {
-            "model": "Random Forest",
-            "cv_macro_f1_mean": 0.70,
-            "cv_macro_f1_std": 0.05,
-            "mean_fit_time": 0.1,
-        },
-        {
-            "model": "Extra Trees",
-            "cv_macro_f1_mean": 0.85,
-            "cv_macro_f1_std": 0.05,
-            "mean_fit_time": 0.1,
-        },
-        {
-            "model": "Histogram Gradient Boosting",
-            "cv_macro_f1_mean": 0.60,
-            "cv_macro_f1_std": 0.05,
-            "mean_fit_time": 0.1,
-        },
-    ]
-    for name in analysis.models:
-        analysis.best_params[name] = {}
+        analysis.search_summaries = [
+            {
+                "model": "Logistic Regression",
+                "cv_macro_f1_mean": 0.50,
+                "cv_macro_f1_std": 0.05,
+                "mean_fit_time": 0.1,
+            },
+            {
+                "model": "Random Forest",
+                "cv_macro_f1_mean": 0.70,
+                "cv_macro_f1_std": 0.05,
+                "mean_fit_time": 0.1,
+            },
+            {
+                "model": "Extra Trees",
+                "cv_macro_f1_mean": 0.85,
+                "cv_macro_f1_std": 0.05,
+                "mean_fit_time": 0.1,
+            },
+            {
+                "model": "Histogram Gradient Boosting",
+                "cv_macro_f1_mean": 0.60,
+                "cv_macro_f1_std": 0.05,
+                "mean_fit_time": 0.1,
+            },
+        ]
+        for name in analysis.models:
+            analysis.best_params[name] = {}
 
-    analysis.holdout_rows = [
-        {"model": "Logistic Regression", "macro_f1": 0.50},
-        {"model": "Random Forest", "macro_f1": 0.99},
-        {"model": "Extra Trees", "macro_f1": 0.10},
-        {"model": "Histogram Gradient Boosting", "macro_f1": 0.60},
-    ]
+        analysis.holdout_rows = [
+            {"model": "Logistic Regression", "macro_f1": 0.50},
+            {"model": "Random Forest", "macro_f1": 0.99},
+            {"model": "Extra Trees", "macro_f1": 0.10},
+            {"model": "Histogram Gradient Boosting", "macro_f1": 0.60},
+        ]
 
-    analysis.refit_and_export_production_models()
-    assert analysis.cv_selected_model_name == "Extra Trees"
+        analysis.refit_and_export_production_models()
+        assert analysis.cv_selected_model_name == "Extra Trees"
+    finally:
+        if analysis.transaction is not None:
+            analysis.transaction.rollback()
 
 
 def test_12_rank_exact_stored_values_not_rounded():
@@ -720,3 +725,30 @@ def test_24_no_ambiguous_user_facing_terminology():
     assert "best_overall_model.joblib" not in readme_text
     assert "best_overall_model.joblib" not in src_text
     assert "best_overall_production_full_data_refit" not in src_text
+
+
+@pytest.mark.integration
+def test_25_provenance_contains_created_at_and_fitted_at_utc(
+    binary_chronological_dataset, tmp_path, minimal_grids
+):
+    """Test 25: provenance block contains both created_at_utc and fitted_at_utc."""
+    analysis, output_dir = create_analysis(
+        tmp_path, minimal_grids, binary_chronological_dataset
+    )
+    analysis.run()
+
+    eval_artifact = joblib.load(output_dir / "evaluation_logistic_regression.joblib")
+    prod_artifact = joblib.load(output_dir / "production_logistic_regression.joblib")
+    alias_artifact = joblib.load(output_dir / "cv_selected_production_model.joblib")
+
+    for art in (eval_artifact, prod_artifact, alias_artifact):
+        prov = art["provenance"]
+        assert "created_at_utc" in prov
+        assert "fitted_at_utc" in prov
+        assert isinstance(prov["created_at_utc"], str)
+        assert isinstance(prov["fitted_at_utc"], str)
+
+    selected_name = analysis.cv_selected_model_name
+    slug = analysis.slug(selected_name)
+    selected_fam = joblib.load(output_dir / f"production_{slug}.joblib")
+    assert selected_fam["provenance"]["fitted_at_utc"] == alias_artifact["provenance"]["fitted_at_utc"]

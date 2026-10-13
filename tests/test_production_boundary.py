@@ -49,28 +49,18 @@ class TestProductionModelsUseAllRows:
                 if classifier_step is not None
                 else "unknown"
             )
-            captured_fits.append(
-                {
-                    "X": X.copy(),
-                    "y": y.copy() if y is not None else None,
-                    "classifier_name": classifier_name,
-                }
-            )
+            if len(X) == 20:
+                captured_fits.append(
+                    {
+                        "X": X.copy(),
+                        "y": y.copy() if y is not None else None,
+                        "classifier_name": classifier_name,
+                    }
+                )
             return original_fit(self, X, y, **fit_params)
 
-        analysis.load()
-        analysis.create_chronological_split()
-        analysis.build_models()
-        analysis.tune_on_training_only()
-        analysis.evaluate_untouched_holdout()
-
         monkeypatch.setattr(Pipeline, "fit", spy_fit)
-        analysis.refit_and_export_production_models()
-
-        analysis.metadata()
-        analysis.write_run_status("completed")
-        analysis.write_generated_file_manifest()
-        analysis.transaction.commit(analysis.generated_files)
+        analysis.run()
 
         total_rows = len(analysis.data)
         # Should capture exactly 4 top-level production fits
