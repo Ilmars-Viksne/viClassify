@@ -48,9 +48,24 @@ from sklearn.metrics import (
     precision_score,
     recall_score,
 )
-from sklearn.model_selection import GridSearchCV, StratifiedKFold, cross_validate
+from sklearn.model_selection import GridSearchCV, StratifiedKFold
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
+
+__version__ = "0.4.0"
+
+
+def align_probabilities_for_log_loss(
+    probabilities: Any,
+    estimator_classes: Any,
+) -> tuple[np.ndarray, list[str]]:
+    """Reorder probability columns from estimator_classes order to sorted log_loss order."""
+    proba_arr = np.asarray(probabilities)
+    classes_list = list(estimator_classes)
+    log_loss_classes = sorted(classes_list, key=str)
+    source_index = {label: index for index, label in enumerate(classes_list)}
+    column_indices = [source_index[label] for label in log_loss_classes]
+    return proba_arr[:, column_indices], log_loss_classes
 
 
 def validate_probability_matrix(
@@ -259,18 +274,56 @@ class OutputTransaction:
             if line.strip()
         ]
 
-        for rel_file in manifest_lines:
+        manifest_entries = set(manifest_lines)
+        if len(manifest_lines) != len(manifest_entries):
+            raise RuntimeError(
+                "Generated-file manifest 'generated_files.txt' contains duplicate entries."
+            )
+
+        expected_entries = set(generated_files) | {
+            "generated_files.txt",
+            "run_status.json",
+        }
+
+        if manifest_entries != expected_entries:
+            missing_from_manifest = sorted(expected_entries - manifest_entries)
+            unexpected_in_manifest = sorted(manifest_entries - expected_entries)
+            raise RuntimeError(
+                "Generated-file manifest mismatch. "
+                f"Missing from manifest: {missing_from_manifest}; "
+                f"unexpected entries: {unexpected_in_manifest}"
+            )
+
+        for rel_file in sorted(manifest_entries):
+            rel_path = Path(rel_file)
+            if rel_path.is_absolute() or ".." in rel_path.parts:
+                raise RuntimeError(
+                    f"Manifest path is unsafe or absolute: '{rel_file}'"
+                )
+
+            if "staging-" in rel_file or "backup-" in rel_file:
+                raise RuntimeError(
+                    f"Manifest contains transient staging reference: '{rel_file}'"
+                )
+
             file_path = self.staging_path / rel_file
+            try:
+                resolved_file = file_path.resolve()
+                resolved_staging = self.staging_path.resolve()
+                resolved_file.relative_to(resolved_staging)
+            except ValueError:
+                raise RuntimeError(
+                    f"Manifest path resolves outside staging directory: '{rel_file}'"
+                )
+
             if not file_path.exists():
                 raise RuntimeError(
                     f"Registered generated file '{rel_file}' is missing from staging."
                 )
 
-        # Ensure no manifest line references transient staging names or external paths
-        for rel_file in manifest_lines:
-            if "staging-" in rel_file or "backup-" in rel_file:
+            if not file_path.is_file():
                 raise RuntimeError(
-                    f"Manifest contains transient staging reference: '{rel_file}'"
+                    f"Registered generated path '{rel_file}' is not a regular file."
                 )
 
     def commit(self, generated_files: set[str]) -> None:
@@ -359,34 +412,18 @@ class ClassificationAnalysis:
     def __init__(
         self,
         cfg: Config,
+        *,
         transaction: OutputTransaction | None = None,
+        grid_overrides: dict[str, dict[str, list[Any]]] | None = None,
     ) -> None:
         self.cfg = cfg
-        self.final_output_path = cfg.output.resolve()
-
-        # Check output policy early
-        target = self.final_output_path
-        if target.exists():
-            is_empty = not any(target.iterdir())
-            if self.cfg.output_policy == "fail" and not is_empty:
-                raise RuntimeError(
-                    f"Output directory '{target}' exists and is nonempty. "
-                    "Use --output-policy replace to overwrite existing results."
-                )
-
-        run_id = (
-            datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-            + "-"
-            + uuid.uuid4().hex[:6]
+        self.transaction = transaction
+        self.grid_overrides = (
+            deepcopy(grid_overrides) if grid_overrides is not None else None
         )
-        staging_name = f".{self.final_output_path.name}.staging-{run_id}"
-        self.staging_dir = self.final_output_path.parent / staging_name
 
-        # Create staging directory after policy check
-        self.staging_dir.mkdir(parents=True, exist_ok=True)
-
-        # Working output path used by internal methods
-        self.working_output_dir = self.staging_dir
+        self.final_output_path = cfg.output.resolve()
+        self.working_output_dir: Path | None = None
 
         self.df: pd.DataFrame | None = None
         self.classes: list[str] = []
@@ -412,7 +449,45 @@ class ClassificationAnalysis:
         self.started_at_utc: str | None = None
         self.completed_at_utc: str | None = None
 
+        self.input_sha256: str | None = None
+        self.source_sha256: str | None = None
+
         self.generated_files: set[str] = set()
+
+    def compute_hashes(self) -> tuple[str, str]:
+        if self.input_sha256 is None or self.source_sha256 is None:
+            def hash_file(path: Path) -> str:
+                hasher = hashlib.sha256()
+                with path.open("rb") as f:
+                    while chunk := f.read(65536):
+                        hasher.update(chunk)
+                return hasher.hexdigest()
+
+            self.input_sha256 = hash_file(self.cfg.data)
+            self.source_sha256 = hash_file(Path(__file__).resolve())
+        return self.input_sha256, self.source_sha256
+
+    def get_provenance_block(self) -> dict[str, Any]:
+        input_sha256, source_sha256 = self.compute_hashes()
+        run_id = self.transaction.transaction_id if self.transaction else "unknown"
+        return {
+            "viclassify_version": __version__,
+            "artifact_schema_version": "1.0",
+            "run_id": run_id,
+            "created_at_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "input_filename": self.cfg.data.name,
+            "input_sha256": input_sha256,
+            "source_sha256": source_sha256,
+            "python_version": platform.python_version(),
+            "platform": platform.platform(),
+            "package_versions": {
+                "numpy": np.__version__,
+                "pandas": pd.__version__,
+                "scipy": scipy.__version__,
+                "scikit_learn": sklearn.__version__,
+                "joblib": joblib.__version__,
+            },
+        }
 
     @staticmethod
     def calculate_holdout_metrics(
@@ -421,6 +496,8 @@ class ClassificationAnalysis:
         probabilities: np.ndarray,
         reporting_classes: list[str],
         estimator_classes: list[str],
+        model_name: str = "UnknownModel",
+        evaluation_partition: str = "chronological_holdout",
     ) -> dict[str, Any]:
         macro_recall = recall_score(
             y_true,
@@ -475,19 +552,33 @@ class ClassificationAnalysis:
         }
 
         try:
+            validate_probability_matrix(
+                y_true=y_true,
+                probabilities=probabilities,
+                estimator_classes=estimator_classes,
+                model_name=model_name,
+            )
+            aligned_probabilities, log_loss_classes = align_probabilities_for_log_loss(
+                probabilities=probabilities,
+                estimator_classes=estimator_classes,
+            )
             metrics["log_loss"] = float(
                 log_loss(
                     y_true,
-                    probabilities,
-                    labels=estimator_classes,
+                    aligned_probabilities,
+                    labels=log_loss_classes,
                 )
             )
             metrics["log_loss_status"] = "calculated"
             metrics["log_loss_error"] = ""
-        except ValueError as exc:
-            metrics["log_loss"] = np.nan
-            metrics["log_loss_status"] = "failed"
-            metrics["log_loss_error"] = str(exc)
+        except (ValueError, TypeError, Exception) as exc:
+            proba_arr = np.asarray(probabilities)
+            shape_str = str(proba_arr.shape) if hasattr(proba_arr, "shape") else "unknown"
+            raise RuntimeError(
+                f"Log-loss calculation failed for model family '{model_name}' on evaluation partition '{evaluation_partition}'. "
+                f"Estimator classes: {list(estimator_classes)}; probability matrix shape: {shape_str}. "
+                f"Error: {exc}"
+            ) from exc
 
         return metrics
 
@@ -611,6 +702,14 @@ class ClassificationAnalysis:
         return ranked
 
     def path(self, name: str) -> Path:
+        if self.working_output_dir is None:
+            if self.transaction is None:
+                self.transaction = OutputTransaction(
+                    data_path=self.cfg.data,
+                    final_path=self.cfg.output,
+                    policy=self.cfg.output_policy,
+                )
+            self.working_output_dir = self.transaction.prepare()
         self.generated_files.add(name)
         return self.working_output_dir / name
 
@@ -1457,6 +1556,9 @@ class ClassificationAnalysis:
             },
         }
 
+        if grid_overrides is None:
+            grid_overrides = self.grid_overrides
+
         if grid_overrides is not None:
             expected = set(self.models)
             provided = set(grid_overrides)
@@ -1488,6 +1590,7 @@ class ClassificationAnalysis:
                         )
 
             self.grids = deepcopy(grid_overrides)
+            self.grid_overrides = deepcopy(grid_overrides)
 
     def cv(self, y: pd.Series) -> StratifiedKFold:
         minimum_class_count = int(y.value_counts().min())
@@ -1581,18 +1684,6 @@ class ClassificationAnalysis:
 
             self.search_summaries.append(row)
 
-            selected = clone(pipeline).set_params(**search.best_params_)
-
-            fold_scores = cross_validate(
-                selected,
-                X_train,
-                y_train,
-                cv=cv,
-                scoring=self.SCORING,
-                n_jobs=self.cfg.n_jobs,
-                error_score="raise",
-            )
-
             fold_rows: list[dict[str, Any]] = []
 
             for fold_index in range(cv.n_splits):
@@ -1603,12 +1694,12 @@ class ClassificationAnalysis:
                         "Selected-configuration tuning-CV "
                         "score; not a nested-CV estimate"
                     ),
-                    "fit_time": fold_scores["fit_time"][fold_index],
-                    "score_time": fold_scores["score_time"][fold_index],
                 }
 
                 for metric in self.SCORING:
-                    fold_row[metric] = fold_scores[f"test_{metric}"][fold_index]
+                    fold_row[metric] = float(
+                        results.loc[best_index, f"split{fold_index}_test_{metric}"]
+                    )
 
                 fold_rows.append(fold_row)
 
@@ -1715,15 +1806,10 @@ class ClassificationAnalysis:
                 probabilities=proba,
                 reporting_classes=self.classes,
                 estimator_classes=model_classes,
+                model_name=name,
+                evaluation_partition="chronological_holdout",
             )
             metrics["model"] = name
-
-            if metrics["log_loss_status"] == "failed":
-                warnings.warn(
-                    f"{name}: log-loss calculation failed: {metrics['log_loss_error']}",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
 
             self.holdout_rows.append(metrics)
 
@@ -1857,6 +1943,7 @@ class ClassificationAnalysis:
         model: Pipeline,
     ) -> None:
         classifier = model.named_steps["classifier"]
+        estimator_classes = list(classifier.classes_)
 
         artifact = {
             "model": model,
@@ -1864,9 +1951,22 @@ class ClassificationAnalysis:
             "model_role": ("chronological_training_evaluation_model"),
             "features": list(self.cfg.features),
             "reporting_class_order": self.classes,
-            "estimator_class_order": list(classifier.classes_),
+            "estimator_class_order": estimator_classes,
             "selection_metric": (self.cfg.selection_metric),
             "best_parameters": (self.best_params[name]),
+            "provenance": self.get_provenance_block(),
+            "model_context": {
+                "model_role": "chronological_training_evaluation_model",
+                "features": list(self.cfg.features),
+                "target": self.cfg.target,
+                "reporting_class_order": self.classes,
+                "estimator_class_order": estimator_classes,
+                "selection_metric": self.cfg.selection_metric,
+                "best_parameters": self.best_params[name],
+                "random_state": self.cfg.random_state,
+                "training_partition": "chronological_training_partition",
+                "row_count_fitted": len(self.train_indices) if self.train_indices is not None else 0,
+            },
         }
 
         joblib.dump(
@@ -2382,6 +2482,19 @@ class ClassificationAnalysis:
                 "estimator_class_order": (estimator_classes),
                 "selection_metric": (self.cfg.selection_metric),
                 "best_parameters": (self.best_params[name]),
+                "provenance": self.get_provenance_block(),
+                "model_context": {
+                    "model_role": "production_full_data_refit",
+                    "features": list(self.cfg.features),
+                    "target": self.cfg.target,
+                    "reporting_class_order": self.classes,
+                    "estimator_class_order": estimator_classes,
+                    "selection_metric": self.cfg.selection_metric,
+                    "best_parameters": self.best_params[name],
+                    "random_state": self.cfg.random_state,
+                    "training_partition": "all_available_rows",
+                    "row_count_fitted": len(X),
+                },
             }
 
             joblib.dump(
@@ -2444,6 +2557,19 @@ class ClassificationAnalysis:
             "holdout_used_for_selection": False,
             "nested_cv": False,
             "production_refit_data": "all_available_rows",
+            "provenance": self.get_provenance_block(),
+            "model_context": {
+                "model_role": "cv_selected_production_full_data_refit",
+                "features": list(self.cfg.features),
+                "target": self.cfg.target,
+                "reporting_class_order": self.classes,
+                "estimator_class_order": cv_selected_classes,
+                "selection_metric": self.cfg.selection_metric,
+                "best_parameters": self.best_params[cv_selected_name],
+                "random_state": self.cfg.random_state,
+                "training_partition": "all_available_rows",
+                "row_count_fitted": len(X),
+            },
         }
 
         joblib.dump(
@@ -2508,18 +2634,10 @@ class ClassificationAnalysis:
             list(self.cfg.class_order) if self.cfg.class_order else None
         )
 
-        def hash_file(path: Path) -> str:
-            hasher = hashlib.sha256()
-            with path.open("rb") as f:
-                while chunk := f.read(65536):
-                    hasher.update(chunk)
-            return hasher.hexdigest()
-
-        input_sha256 = hash_file(self.cfg.data)
-        source_sha256 = hash_file(Path(__file__).resolve())
+        input_sha256, source_sha256 = self.compute_hashes()
 
         payload = {
-            "viclassify_version": "unversioned",
+            "viclassify_version": __version__,
             "output_schema_version": "1.0",
             "metadata_schema_version": "1.0",
             "input_sha256": input_sha256,
@@ -2631,7 +2749,7 @@ class ClassificationAnalysis:
     def write_run_status(
         self, status: str, error_info: dict[str, str] | None = None
     ) -> None:
-        status_file = self.working_output_dir / "run_status.json"
+        status_file = self.path("run_status.json")
         payload: dict[str, Any] = {
             "status": status,
             "started_at_utc": self.started_at_utc,
@@ -2643,89 +2761,26 @@ class ClassificationAnalysis:
         with status_file.open("w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2, ensure_ascii=False)
 
-        self.generated_files.add("run_status.json")
-
-    def validate_manifest(self) -> None:
-        missing = []
-        not_files = []
-
-        # Validate that all files recorded in self.generated_files exist and are valid.
-        for name in sorted(self.generated_files):
-            rel_path = Path(name)
-            if rel_path.is_absolute() or ".." in rel_path.parts:
-                raise RuntimeError(f"Manifest entry is invalid or unsafe: '{name}'")
-
-            candidate = self.working_output_dir / name
-            try:
-                resolved_candidate = candidate.resolve()
-                resolved_staging = self.working_output_dir.resolve()
-                resolved_candidate.relative_to(resolved_staging)
-            except ValueError:
-                raise RuntimeError(
-                    f"Manifest path resolves outside staging directory: '{name}'"
-                )
-
-            if not candidate.exists():
-                missing.append(name)
-            elif not candidate.is_file():
-                not_files.append(name)
-
-        if missing or not_files:
-            raise RuntimeError(
-                "Generated-file validation failed. "
-                f"Missing: {missing}; not regular files: {not_files}"
-            )
-
     def write_generated_file_manifest(
         self,
     ) -> None:
         manifest_name = "generated_files.txt"
-
         files = sorted(self.generated_files | {manifest_name, "run_status.json"})
-
-        manifest_path = self.working_output_dir / manifest_name
-
+        manifest_path = self.path(manifest_name)
         manifest_path.write_text(
             "\n".join(files) + "\n",
             encoding="utf-8",
         )
 
-        self.generated_files.add(manifest_name)
-
-    def promote_staging(self) -> None:
-        # Backup-and-swap sequence
-        target = self.final_output_path
-        target.parent.mkdir(parents=True, exist_ok=True)
-
-        # Check output policy
-        if target.exists():
-            is_empty = not any(target.iterdir())
-            if self.cfg.output_policy == "fail" and not is_empty:
-                raise RuntimeError(
-                    f"Output directory '{target}' exists and is nonempty. "
-                    "Use --output-policy replace to overwrite existing results."
-                )
-
-        backup = None
-        if target.exists():
-            backup_id = uuid.uuid4().hex[:6]
-            backup = target.parent / f".{target.name}.backup-{backup_id}"
-            target.rename(backup)
-
-        try:
-            self.staging_dir.rename(target)
-        except Exception:
-            # Restore backup if rename failed
-            if backup and backup.exists():
-                if target.exists():
-                    shutil.rmtree(target, ignore_errors=True)
-                backup.rename(target)
-            raise
-        else:
-            if backup and backup.exists():
-                shutil.rmtree(backup, ignore_errors=True)
-
     def run(self) -> None:
+        if self.transaction is None:
+            self.transaction = OutputTransaction(
+                data_path=self.cfg.data,
+                final_path=self.cfg.output,
+                policy=self.cfg.output_policy,
+            )
+        self.working_output_dir = self.transaction.prepare()
+
         self.started_at_utc = datetime.datetime.now(datetime.timezone.utc).isoformat()
         self.write_run_status("running")
 
@@ -2735,7 +2790,7 @@ class ClassificationAnalysis:
             self.correlations()
             self.exploratory_plots()
             self.create_chronological_split()
-            self.build_models()
+            self.build_models(grid_overrides=self.grid_overrides)
             self.tune_on_training_only()
             self.evaluate_untouched_holdout()
             self.export_evaluation_logistic_outputs()
@@ -2745,24 +2800,23 @@ class ClassificationAnalysis:
                 datetime.timezone.utc
             ).isoformat()
             self.metadata()
-            self.write_generated_file_manifest()
-            self.validate_manifest()
             self.write_run_status("completed")
-            self.promote_staging()
+            self.write_generated_file_manifest()
+            self.transaction.commit(self.generated_files)
         except Exception as exc:
             try:
-                self.write_run_status(
-                    "failed",
-                    error_info={
-                        "type": exc.__class__.__name__,
-                        "message": str(exc),
-                    },
-                )
+                if self.working_output_dir is not None and self.working_output_dir.exists():
+                    self.write_run_status(
+                        "failed",
+                        error_info={
+                            "type": exc.__class__.__name__,
+                            "message": str(exc),
+                        },
+                    )
             except OSError:
                 pass
-            # Clean up staging directory on failure
-            if self.staging_dir.exists():
-                shutil.rmtree(self.staging_dir, ignore_errors=True)
+            if self.transaction is not None:
+                self.transaction.rollback()
             raise
 
         self.heading("Analysis completed")
@@ -2773,6 +2827,12 @@ class ClassificationAnalysis:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=("viClassify: binary or multiclass tabular classification")
+    )
+
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
     )
 
     parser.add_argument(

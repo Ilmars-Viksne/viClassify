@@ -11,7 +11,11 @@ from sklearn.metrics import (
     recall_score,
 )
 
-from viclassify_cli import validate_probability_matrix
+from viclassify_cli import (
+    ClassificationAnalysis,
+    align_probabilities_for_log_loss,
+    validate_probability_matrix,
+)
 
 
 class TestPerfectPrediction:
@@ -384,45 +388,121 @@ class TestUnpredictedButPresentClass:
 class TestLogLossProbabilityOrder:
     """Tests for log-loss probability column ordering."""
 
-    def test_log_loss_probability_order(self):
-        """Test 26: log-loss probability order.
+    def test_align_probabilities_for_log_loss(self):
+        """Test align_probabilities_for_log_loss reorders columns correctly."""
+        estimator_classes = ["O", "B", "G"]
+        # Probabilities in estimator_classes order: O, B, G
+        probabilities = np.array(
+            [
+                [0.8, 0.1, 0.1],  # True O
+                [0.2, 0.7, 0.1],  # True B
+                [0.1, 0.1, 0.8],  # True G
+            ]
+        )
 
-        Estimator class order is non-alphabetical.
-        sklearn's log_loss expects labels in lexicographic order and y_proba columns to match.
+        aligned_proba, log_loss_classes = align_probabilities_for_log_loss(
+            probabilities, estimator_classes
+        )
+
+        assert log_loss_classes == ["B", "G", "O"]
+        # Column mapping: B is index 1, G is index 2, O is index 0
+        expected_aligned = np.array(
+            [
+                [0.1, 0.1, 0.8],
+                [0.7, 0.1, 0.2],
+                [0.1, 0.8, 0.1],
+            ]
+        )
+        np.testing.assert_allclose(aligned_proba, expected_aligned)
+
+    def test_non_lexicographical_estimator_class_order(self):
+        """Test calculate_holdout_metrics with non-lexicographical estimator order.
+
+        estimator_classes = ["O", "B", "G"] (non-sorted)
+        probabilities supplied in estimator order [O, B, G].
         """
-        # Use classes in lexicographic order to avoid sklearn reordering
-        classes = ["B", "G", "O"]  # Lexicographic order
+        estimator_classes = ["O", "B", "G"]
         y_true = np.array(["O", "B", "G", "O"])
+        y_pred = np.array(["O", "B", "G", "O"])
+        reporting_classes = ["O", "B", "G"]
 
-        # Probabilities in lexicographic order: B, G, O
+        # Probabilities in estimator_classes order: O, B, G
         y_proba = np.array(
             [
-                [0.1, 0.1, 0.8],  # True O, prob for O is 0.8
-                [0.7, 0.1, 0.2],  # True B, prob for B is 0.7
-                [0.1, 0.8, 0.1],  # True G, prob for G is 0.8
-                [0.2, 0.1, 0.7],  # True O, prob for O is 0.7
+                [0.8, 0.1, 0.1],  # True O
+                [0.2, 0.7, 0.1],  # True B
+                [0.1, 0.1, 0.8],  # True G
+                [0.7, 0.2, 0.1],  # True O
             ]
         )
 
-        # Log loss should use estimator class order (lexicographic)
-        ll = log_loss(y_true, y_proba, labels=classes)
+        metrics = ClassificationAnalysis.calculate_holdout_metrics(
+            y_true=y_true,
+            y_pred=y_pred,
+            probabilities=y_proba,
+            reporting_classes=reporting_classes,
+            estimator_classes=estimator_classes,
+            model_name="NonLexModel",
+        )
 
-        # Manual calculation:
-        # -log(0.8) -log(0.7) -log(0.8) -log(0.7) all / 4
         expected = (-np.log(0.8) - np.log(0.7) - np.log(0.8) - np.log(0.7)) / 4
-        assert ll == pytest.approx(expected)
+        assert metrics["log_loss"] == pytest.approx(expected)
 
-        # If we used different column order, we'd get wrong result
-        wrong_proba = np.array(
+    def test_unusual_string_labels(self):
+        """Test probability alignment with unusual string class labels."""
+        estimator_classes = ["orange", "banana", "apple"]
+        y_true = np.array(["orange", "banana", "apple"])
+        y_proba = np.array(
             [
-                [0.1, 0.8, 0.1],  # Wrong: O, B, G order
-                [0.7, 0.2, 0.1],
-                [0.1, 0.1, 0.8],
-                [0.2, 0.7, 0.1],
+                [0.9, 0.05, 0.05],
+                [0.05, 0.9, 0.05],
+                [0.05, 0.05, 0.9],
             ]
         )
-        ll_wrong = log_loss(y_true, wrong_proba, labels=classes)
-        assert ll != ll_wrong
+
+        aligned_proba, sorted_classes = align_probabilities_for_log_loss(
+            y_proba, estimator_classes
+        )
+
+        assert sorted_classes == ["apple", "banana", "orange"]
+        # apple is col 2, banana is col 1, orange is col 0
+        expected_first_row = [0.05, 0.05, 0.9]
+        np.testing.assert_allclose(aligned_proba[0], expected_first_row)
+
+        metrics = ClassificationAnalysis.calculate_holdout_metrics(
+            y_true=y_true,
+            y_pred=y_true,
+            probabilities=y_proba,
+            reporting_classes=estimator_classes,
+            estimator_classes=estimator_classes,
+            model_name="FruitModel",
+        )
+        assert metrics["log_loss"] == pytest.approx(-np.log(0.9))
+
+    def test_holdout_metrics_raises_runtime_error_on_invalid_probabilities(self):
+        """Test calculate_holdout_metrics raises RuntimeError on invalid probabilities."""
+        y_true = np.array(["O", "F"])
+        y_pred = np.array(["O", "F"])
+        invalid_proba = np.array([[0.5, 0.1], [0.1, 0.9]])  # Row 1 sums to 0.6
+        estimator_classes = ["O", "F"]
+
+        with pytest.raises(RuntimeError) as exc_info:
+            ClassificationAnalysis.calculate_holdout_metrics(
+                y_true=y_true,
+                y_pred=y_pred,
+                probabilities=invalid_proba,
+                reporting_classes=estimator_classes,
+                estimator_classes=estimator_classes,
+                model_name="BadModel",
+                evaluation_partition="holdout",
+            )
+
+        msg = str(exc_info.value)
+        assert "Log-loss calculation failed for model family 'BadModel'" in msg
+        assert "evaluation partition 'holdout'" in msg
+        assert "Estimator classes: ['O', 'F']" in msg
+        assert "probability matrix shape: (2, 2)" in msg
+        assert "row sums do not equal 1.0" in msg
 
 
 class TestProbabilityRowsSumToOne:

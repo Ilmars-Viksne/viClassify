@@ -154,7 +154,7 @@ def test_evaluate_untouched_holdout_integration(minimal_grids, tmp_path):
         target="Y",
         features=("X1", "X2", "X3", "X4", "X5", "X6", "X7"),
         class_order=("O", "B", "G", "M"),
-        test_fraction=0.25,  # Last 5 rows (O, B, M, M) - no G in holdout
+        test_fraction=0.25,  # Last 5 rows (M, O, B, M, M) - no G in holdout
         cv_folds=2,
         random_state=42,
         n_jobs=1,
@@ -163,10 +163,7 @@ def test_evaluate_untouched_holdout_integration(minimal_grids, tmp_path):
         selection_metric="macro_f1",
     )
 
-    analysis = ClassificationAnalysis(cfg)
-    analysis.load()
-    analysis.create_chronological_split()
-    analysis.build_models(grid_overrides=minimal_grids)
+    analysis = ClassificationAnalysis(cfg, grid_overrides=minimal_grids)
     analysis.run()  # Run the full pipeline
 
     # Check the holdout metrics

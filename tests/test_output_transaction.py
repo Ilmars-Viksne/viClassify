@@ -38,7 +38,55 @@ class TestOutputTransaction:
         )
 
         with pytest.raises(RuntimeError, match="exists and is nonempty"):
-            ClassificationAnalysis(cfg)
+            ClassificationAnalysis(cfg).run()
+
+    def test_constructor_has_no_filesystem_side_effects(self, tmp_path):
+        """Test constructor does not create directories or files."""
+        data_file = tmp_path / "data.csv"
+        data_file.write_text("X1,X2,Y\n1,10,O\n2,20,F\n", encoding="utf-8")
+        output_dir = tmp_path / "should_not_exist_yet"
+
+        cfg = Config(
+            data=data_file,
+            output=output_dir,
+            target="Y",
+            features=("X1", "X2"),
+            class_order=None,
+            test_fraction=0.25,
+            cv_folds=2,
+            random_state=42,
+            n_jobs=1,
+            permutation_repeats=1,
+            dpi=50,
+            output_policy="fail",
+        )
+
+        txn = OutputTransaction(data_file, output_dir, policy="fail")
+        assert not output_dir.exists()
+        assert not txn.staging_path.exists()
+
+        analysis = ClassificationAnalysis(cfg, transaction=txn)
+        assert not output_dir.exists()
+        assert not txn.staging_path.exists()
+        assert len(list(tmp_path.glob(".*.staging-*"))) == 0
+
+    def test_validate_staged_output_exact_set_check(self, tmp_path):
+        """Test validate_staged_output enforces exact set equality with manifest."""
+        data_file = tmp_path / "data.csv"
+        data_file.write_text("X1,X2,Y\n1,10,O\n2,20,F\n", encoding="utf-8")
+        output_dir = tmp_path / "out_test"
+
+        txn = OutputTransaction(data_file, output_dir, policy="fail")
+        staging = txn.prepare()
+
+        (staging / "run_metadata.json").write_text("{}", encoding="utf-8")
+        # Manifest missing file 'extra.txt' which is in generated_files set
+        (staging / "generated_files.txt").write_text("generated_files.txt\nrun_status.json\n", encoding="utf-8")
+        (staging / "run_status.json").write_text("{}", encoding="utf-8")
+        (staging / "extra.txt").write_text("extra", encoding="utf-8")
+
+        with pytest.raises(RuntimeError, match="Generated-file manifest mismatch"):
+            txn.validate_staged_output({"extra.txt"})
 
     def test_acceptance_of_absent_directory(self, tmp_path):
         """Test absent output directory is accepted."""

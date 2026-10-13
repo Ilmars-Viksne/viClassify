@@ -36,12 +36,7 @@ class TestProductionModelsUseAllRows:
             selection_metric="macro_f1",
         )
 
-        analysis = ClassificationAnalysis(cfg)
-        analysis.load()
-        analysis.create_chronological_split()
-        analysis.build_models(grid_overrides=minimal_grids)
-        analysis.tune_on_training_only()
-        analysis.evaluate_untouched_holdout()
+        analysis = ClassificationAnalysis(cfg, grid_overrides=minimal_grids)
 
         # Spy on production model fit
         captured_fits = []
@@ -63,13 +58,19 @@ class TestProductionModelsUseAllRows:
             )
             return original_fit(self, X, y, **fit_params)
 
+        analysis.load()
+        analysis.create_chronological_split()
+        analysis.build_models()
+        analysis.tune_on_training_only()
+        analysis.evaluate_untouched_holdout()
+
         monkeypatch.setattr(Pipeline, "fit", spy_fit)
         analysis.refit_and_export_production_models()
 
-        # Execute promote_staging if running individual stages to promote files to output_dir
+        analysis.metadata()
+        analysis.write_run_status("completed")
         analysis.write_generated_file_manifest()
-        analysis.validate_manifest()
-        analysis.promote_staging()
+        analysis.transaction.commit(analysis.generated_files)
 
         total_rows = len(analysis.data)
         # Should capture exactly 4 top-level production fits
@@ -132,16 +133,9 @@ class TestProductionFittingAfterEvaluation:
         )
 
         # Create fresh instance to run run() cleanly
-        fresh_analysis = ClassificationAnalysis(cfg)
+        fresh_analysis = ClassificationAnalysis(cfg, grid_overrides=minimal_grids)
 
         stage_order = []
-
-        original_build = fresh_analysis.build_models
-
-        def build_with_minimal_grids(grid_overrides=None):
-            return original_build(grid_overrides=minimal_grids)
-
-        fresh_analysis.build_models = build_with_minimal_grids
 
         original_evaluate = fresh_analysis.evaluate_untouched_holdout
         original_refit = fresh_analysis.refit_and_export_production_models
@@ -202,16 +196,8 @@ class TestArtifactRolesDistinct:
             selection_metric="macro_f1",
         )
 
-        analysis = ClassificationAnalysis(cfg)
-        analysis.load()
-        analysis.create_chronological_split()
-        analysis.build_models(grid_overrides=minimal_grids)
-        analysis.tune_on_training_only()
-        analysis.evaluate_untouched_holdout()
-        analysis.refit_and_export_production_models()
-        analysis.write_generated_file_manifest()
-        analysis.validate_manifest()
-        analysis.promote_staging()
+        analysis = ClassificationAnalysis(cfg, grid_overrides=minimal_grids)
+        analysis.run()
 
         import joblib
 

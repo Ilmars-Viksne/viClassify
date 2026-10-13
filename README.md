@@ -100,7 +100,7 @@ Install the runtime dependencies:
 python -m pip install numpy pandas matplotlib scipy scikit-learn joblib
 ```
 
-For a reproducible project, pin tested versions in a `requirements.txt`, `requirements.lock`, or `pyproject.toml`. viClassify records the versions used for each run in `run_metadata.json`, but it does not currently enforce package-version constraints.
+For a reproducible project, pin tested versions in a `requirements.txt`, `requirements.lock`, or `pyproject.toml`. viClassify records application version `0.4.0` and package versions in `run_metadata.json`, but it does not currently enforce package-version constraints.
 
 ## Installation
 
@@ -232,6 +232,7 @@ python viclassify_cli.py \
 | `--data` | Yes | None | Input CSV path. The file must exist when analysis starts. |
 | `--output` | No | `viclassify_results` | Target output directory, created with parent directories when needed. |
 | `--output-policy` | No | `fail` | Output directory collision policy: `fail` refuses to start if target exists and is nonempty; `replace` replaces existing output upon successful completion. |
+| `--version` | No | N/A | Display application version and exit. |
 | `--target` | No | `Y` | Nonempty target-column name. It must not also occur in `--features`. |
 | `--features` | No | `X1 X2 X3 X4 X5 X6 X7` | One or more ordered, nonempty, distinct predictor-column names. |
 | `--class-order` | No | Detected and sorted | Optional distinct, nonempty reporting labels. Unobserved requested labels produce a warning and are omitted. Observed labels not listed are appended in sorted order. |
@@ -777,7 +778,7 @@ run_metadata.json
 generated_files.txt
 ```
 
-`run_metadata.json` records configuration, observed reporting class order, validation and interpretation notes, versions of Python, NumPy, pandas, SciPy, and scikit-learn, and the complete `model_family_cv_ranking` list sorted by `cv_selection_rank` along with the authoritative `tie_breaking_rule`.
+`run_metadata.json` records application version `0.4.0`, input file hash (`input_sha256`), source code hash (`source_sha256`), execution timestamps (`started_at_utc`, `completed_at_utc`), configuration, observed reporting class order, validation and interpretation notes, operating system and platform details, versions of Python, NumPy, pandas, SciPy, scikit-learn, and joblib, and the complete `model_family_cv_ranking` list sorted by `cv_selection_rank` along with the authoritative `tie_breaking_rule`.
 
 ## Loading an exported model
 
@@ -903,7 +904,7 @@ complete output directory
 requirements or environment lock file
 ```
 
-The current metadata does not record a source-code hash, input-file hash, timestamp, operating system, or joblib version. These are reasonable future additions for stricter provenance.
+Every run records input file hash (`input_sha256`), source code hash (`source_sha256`), UTC start and completion timestamps, platform/OS info, and package versions in both `run_metadata.json` and individual `.joblib` model artifact `provenance` blocks for complete scientific auditability. Staging directory commits use a same-filesystem `Path.rename()` atomic swap pattern.
 
 ## Developer guide
 
@@ -1110,9 +1111,9 @@ Reducing grids in `build_models()` lowers computation but narrows the model sear
 
 This is expected. Matplotlib uses the noninteractive `Agg` backend and writes PNG files to the output directory.
 
-### Existing results disappear
+### Output directory collision or existing results
 
-The application reuses deterministic filenames and overwrites files with matching names in the selected output directory. Use a new output directory for each run when preserving prior results.
+By default, viClassify enforces `--output-policy fail` and refuses to run if the target output directory exists and is nonempty. To explicitly replace existing results upon successful completion, supply `--output-policy replace`.
 
 ## Security
 
@@ -1134,7 +1135,6 @@ Potential future extensions include:
 - cost-sensitive Histogram Gradient Boosting;
 - categorical predictors;
 - YAML or TOML configuration;
-- input and source hashing for stronger provenance;
 - expand automated test coverage and add continuous integration;
 - `pyproject.toml` packaging and a `viclassify` console entry point;
 - additional estimators and user-configurable search grids.

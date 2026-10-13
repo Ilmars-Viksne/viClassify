@@ -341,16 +341,8 @@ class TestModelComparisonConsistency:
             selection_metric="macro_f1",
         )
 
-        analysis = ClassificationAnalysis(cfg)
-        analysis.load()
-        analysis.create_chronological_split()
-        analysis.build_models(grid_overrides=minimal_grids)
-        analysis.tune_on_training_only()
-        analysis.evaluate_untouched_holdout()
-        analysis.refit_and_export_production_models()
-        analysis.write_generated_file_manifest()
-        analysis.validate_manifest()
-        analysis.promote_staging()
+        analysis = ClassificationAnalysis(cfg, grid_overrides=minimal_grids)
+        analysis.run()
 
         out_dir = analysis.final_output_path
         # Read model comparison
