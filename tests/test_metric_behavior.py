@@ -56,9 +56,7 @@ class TestPerfectPrediction:
             == 1.0
         )
         assert (
-            f1_score(
-                y_true, y_pred, labels=labels, average="weighted", zero_division=0
-            )
+            f1_score(y_true, y_pred, labels=labels, average="weighted", zero_division=0)
             == 1.0
         )
         assert matthews_corrcoef(y_true, y_pred) == 1.0
@@ -105,9 +103,7 @@ class TestPerfectPrediction:
             == 1.0
         )
         assert (
-            f1_score(
-                y_true, y_pred, labels=labels, average="weighted", zero_division=0
-            )
+            f1_score(y_true, y_pred, labels=labels, average="weighted", zero_division=0)
             == 1.0
         )
         assert matthews_corrcoef(y_true, y_pred) == 1.0

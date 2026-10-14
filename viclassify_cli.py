@@ -176,14 +176,10 @@ class OutputTransaction:
     def prepare(self) -> Path:
         """Inspect paths and set up the staging directory."""
         if self._committed:
-            raise RuntimeError(
-                "A committed transaction cannot be prepared again."
-            )
+            raise RuntimeError("A committed transaction cannot be prepared again.")
 
         if self._prepared:
-            raise RuntimeError(
-                "Output transaction has already been prepared."
-            )
+            raise RuntimeError("Output transaction has already been prepared.")
 
         self._validate_path_safety()
 
@@ -352,14 +348,10 @@ class OutputTransaction:
     def commit(self, generated_files: set[str]) -> None:
         """Commit staged output to final directory atomically."""
         if self._committed:
-            raise RuntimeError(
-                "Output transaction has already been committed."
-            )
+            raise RuntimeError("Output transaction has already been committed.")
 
         if not self._prepared:
-            raise RuntimeError(
-                "Output transaction has not been prepared."
-            )
+            raise RuntimeError("Output transaction has not been prepared.")
 
         self.validate_staged_output(generated_files)
 
@@ -392,9 +384,7 @@ class OutputTransaction:
     def rollback(self) -> None:
         """Remove staging directory and restore backup if needed."""
         if self._committed:
-            raise RuntimeError(
-                "A committed transaction cannot be rolled back."
-            )
+            raise RuntimeError("A committed transaction cannot be rolled back.")
 
         if self.staging_path.exists():
             shutil.rmtree(self.staging_path, ignore_errors=True)
@@ -1850,9 +1840,7 @@ class ClassificationAnalysis:
                 .set_params(**self.best_params[name])
                 .fit(X_train, y_train)
             )
-            fitted_at_utc = datetime.datetime.now(
-                datetime.timezone.utc
-            ).isoformat()
+            fitted_at_utc = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
             self.evaluation_models[name] = model
             self.export_evaluation_model(name, model, fitted_at_utc=fitted_at_utc)
@@ -2533,9 +2521,7 @@ class ClassificationAnalysis:
 
         for name, pipeline in self.models.items():
             production = clone(pipeline).set_params(**self.best_params[name]).fit(X, y)
-            fitted_at_utc = datetime.datetime.now(
-                datetime.timezone.utc
-            ).isoformat()
+            fitted_at_utc = datetime.datetime.now(datetime.timezone.utc).isoformat()
             production_fitted_timestamps[name] = fitted_at_utc
 
             self.production_models[name] = production
@@ -2629,7 +2615,9 @@ class ClassificationAnalysis:
             "holdout_used_for_selection": False,
             "nested_cv": False,
             "production_refit_data": "all_available_rows",
-            "provenance": self.get_provenance_block(fitted_at_utc=cv_selected_fitted_at_utc),
+            "provenance": self.get_provenance_block(
+                fitted_at_utc=cv_selected_fitted_at_utc
+            ),
             "model_context": {
                 "model_role": "cv_selected_production_full_data_refit",
                 "features": list(self.cfg.features),

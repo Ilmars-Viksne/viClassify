@@ -214,9 +214,7 @@ class TestOutputTransaction:
             output_policy="fail",
         )
 
-        analysis_good = ClassificationAnalysis(
-            cfg_good, grid_overrides=minimal_grids
-        )
+        analysis_good = ClassificationAnalysis(cfg_good, grid_overrides=minimal_grids)
         analysis_good.run()
 
         # Add a marker file to existing output
@@ -338,21 +336,28 @@ class TestOutputTransaction:
         (staging / "run_metadata.json").write_text("{}", encoding="utf-8")
         (staging / "run_status.json").write_text("{}", encoding="utf-8")
         (staging / "generated_files.txt").write_text(
-            "generated_files.txt\nrun_status.json\nrun_metadata.json\n", encoding="utf-8"
+            "generated_files.txt\nrun_status.json\nrun_metadata.json\n",
+            encoding="utf-8",
         )
 
         # 1. Unregistered file at root
         (staging / "unregistered.txt").write_text("unregistered", encoding="utf-8")
-        with pytest.raises(RuntimeError, match="Staged filesystem contents do not match the manifest"):
+        with pytest.raises(
+            RuntimeError, match="Staged filesystem contents do not match the manifest"
+        ):
             txn.validate_staged_output({"run_metadata.json"})
 
         # Remove root unregistered file and add nested unregistered file
         (staging / "unregistered.txt").unlink()
         nested_dir = staging / "nested"
         nested_dir.mkdir()
-        (nested_dir / "unregistered.txt").write_text("nested unregistered", encoding="utf-8")
+        (nested_dir / "unregistered.txt").write_text(
+            "nested unregistered", encoding="utf-8"
+        )
 
-        with pytest.raises(RuntimeError, match="Staged filesystem contents do not match the manifest"):
+        with pytest.raises(
+            RuntimeError, match="Staged filesystem contents do not match the manifest"
+        ):
             txn.validate_staged_output({"run_metadata.json"})
 
         txn.rollback()
@@ -366,7 +371,9 @@ class TestOutputTransaction:
         txn = OutputTransaction(data_file, output_dir, policy="fail")
 
         # 1. Commit before prepare fails
-        with pytest.raises(RuntimeError, match="Output transaction has not been prepared"):
+        with pytest.raises(
+            RuntimeError, match="Output transaction has not been prepared"
+        ):
             txn.commit(set())
 
         # 2. Prepare transaction
@@ -374,26 +381,35 @@ class TestOutputTransaction:
         (staging / "run_metadata.json").write_text("{}", encoding="utf-8")
         (staging / "run_status.json").write_text("{}", encoding="utf-8")
         (staging / "generated_files.txt").write_text(
-            "generated_files.txt\nrun_status.json\nrun_metadata.json\n", encoding="utf-8"
+            "generated_files.txt\nrun_status.json\nrun_metadata.json\n",
+            encoding="utf-8",
         )
 
         # 3. Repeated prepare fails
-        with pytest.raises(RuntimeError, match="Output transaction has already been prepared"):
+        with pytest.raises(
+            RuntimeError, match="Output transaction has already been prepared"
+        ):
             txn.prepare()
 
         # 4. Commit transaction
         txn.commit({"run_metadata.json"})
 
         # 5. Repeated commit fails
-        with pytest.raises(RuntimeError, match="Output transaction has already been committed"):
+        with pytest.raises(
+            RuntimeError, match="Output transaction has already been committed"
+        ):
             txn.commit({"run_metadata.json"})
 
         # 6. Prepare after commit fails
-        with pytest.raises(RuntimeError, match="A committed transaction cannot be prepared again"):
+        with pytest.raises(
+            RuntimeError, match="A committed transaction cannot be prepared again"
+        ):
             txn.prepare()
 
         # 7. Rollback after commit fails
-        with pytest.raises(RuntimeError, match="A committed transaction cannot be rolled back"):
+        with pytest.raises(
+            RuntimeError, match="A committed transaction cannot be rolled back"
+        ):
             txn.rollback()
 
     def test_path_raises_runtime_error_if_not_prepared(self, tmp_path):

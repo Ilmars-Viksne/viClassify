@@ -45,7 +45,9 @@ class TestChronologicalSplitBoundary:
 
             # Verify exact boundary
             assert np.array_equal(analysis.train_indices, np.arange(expected_split))
-            assert np.array_equal(analysis.test_indices, np.arange(expected_split, n_rows))
+            assert np.array_equal(
+                analysis.test_indices, np.arange(expected_split, n_rows)
+            )
 
             # Verify boundary indices
             assert analysis.train_indices[-1] == expected_split - 1
@@ -134,7 +136,9 @@ class TestPartitionCoverage:
             analysis.create_chronological_split()
 
             # Concatenate and verify
-            all_indices = np.concatenate([analysis.train_indices, analysis.test_indices])
+            all_indices = np.concatenate(
+                [analysis.train_indices, analysis.test_indices]
+            )
             all_indices_sorted = np.sort(all_indices)
 
             # Should contain every index exactly once

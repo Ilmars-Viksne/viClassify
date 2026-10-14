@@ -194,7 +194,7 @@ class TestSelectedConfigCVTrainingOnly:
             analysis.create_chronological_split()
             analysis.build_models(grid_overrides=minimal_grids)
 
-        # Spy on GridSearchCV.fit (used by tune_on_training_only)
+            # Spy on GridSearchCV.fit (used by tune_on_training_only)
             captured_fits = []
             original_fit = None
 
@@ -228,7 +228,9 @@ class TestSelectedConfigCVTrainingOnly:
 
                 if "X1" in X_fit.columns:
                     max_x1 = X_fit["X1"].max()
-                    assert max_x1 < test_start, "Holdout row found in selected-config CV"
+                    assert max_x1 < test_start, (
+                        "Holdout row found in selected-config CV"
+                    )
 
                 # Verify estimator has selected hyperparameters
                 estimator = fit_info["estimator"]
@@ -287,7 +289,7 @@ class TestCVSplitterFromTrainingTargets:
             analysis.create_chronological_split()
             analysis.build_models(grid_overrides=minimal_grids)
 
-        # Capture warning about fold reduction
+            # Capture warning about fold reduction
             with pytest.warns(UserWarning, match="Reducing CV folds from 8 to 5"):
                 analysis.tune_on_training_only()
 
@@ -427,7 +429,9 @@ class TestEvaluationArtifactsTrainingOnly:
                 artifact = joblib.load(artifact_path)
 
                 # Verify artifact contents
-                assert artifact["model_role"] == "chronological_training_evaluation_model"
+                assert (
+                    artifact["model_role"] == "chronological_training_evaluation_model"
+                )
                 assert artifact["features"] == list(cfg.features)
                 assert artifact["reporting_class_order"] == analysis.classes
                 assert "estimator_class_order" in artifact
@@ -503,7 +507,9 @@ class TestHoldoutPredictionExports:
                 train_sequences = analysis.data.iloc[analysis.train_indices][
                     "Sequence"
                 ].values
-                assert not set(preds["Sequence"].values).intersection(set(train_sequences))
+                assert not set(preds["Sequence"].values).intersection(
+                    set(train_sequences)
+                )
 
                 # Sequence order matches source holdout order
                 assert np.array_equal(preds["Sequence"].values, test_sequences)

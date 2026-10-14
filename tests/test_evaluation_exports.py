@@ -89,7 +89,11 @@ class TestCombinedHoldoutMetrics:
                         y_true, y_pred, labels=classes, average="macro", zero_division=0
                     ),
                     "weighted_f1": f1_score(
-                        y_true, y_pred, labels=classes, average="weighted", zero_division=0
+                        y_true,
+                        y_pred,
+                        labels=classes,
+                        average="weighted",
+                        zero_division=0,
                     ),
                     "mcc": matthews_corrcoef(y_true, y_pred),
                 }
@@ -189,17 +193,29 @@ class TestPerClassClassificationReport:
                     macro_row = report.loc["macro avg"]
                     assert macro_row["precision"] == pytest.approx(
                         precision_score(
-                            y_true, y_pred, labels=classes, average="macro", zero_division=0
+                            y_true,
+                            y_pred,
+                            labels=classes,
+                            average="macro",
+                            zero_division=0,
                         )
                     )
                     assert macro_row["recall"] == pytest.approx(
                         recall_score(
-                            y_true, y_pred, labels=classes, average="macro", zero_division=0
+                            y_true,
+                            y_pred,
+                            labels=classes,
+                            average="macro",
+                            zero_division=0,
                         )
                     )
                     assert macro_row["f1-score"] == pytest.approx(
                         f1_score(
-                            y_true, y_pred, labels=classes, average="macro", zero_division=0
+                            y_true,
+                            y_pred,
+                            labels=classes,
+                            average="macro",
+                            zero_division=0,
                         )
                     )
 
@@ -313,7 +329,9 @@ class TestConfusionMatrixConsistency:
                     y_true, y_pred, labels=classes, normalize="true"
                 )
                 assert normalized.index.tolist() == [f"Actual_{c}" for c in classes]
-                assert normalized.columns.tolist() == [f"Predicted_{c}" for c in classes]
+                assert normalized.columns.tolist() == [
+                    f"Predicted_{c}" for c in classes
+                ]
                 np.testing.assert_allclose(normalized.values, expected_norm, rtol=1e-6)
 
                 # Handle absent true classes - rows should still exist with NaN or 0

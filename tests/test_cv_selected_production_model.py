@@ -751,4 +751,7 @@ def test_25_provenance_contains_created_at_and_fitted_at_utc(
     selected_name = analysis.cv_selected_model_name
     slug = analysis.slug(selected_name)
     selected_fam = joblib.load(output_dir / f"production_{slug}.joblib")
-    assert selected_fam["provenance"]["fitted_at_utc"] == alias_artifact["provenance"]["fitted_at_utc"]
+    assert (
+        selected_fam["provenance"]["fitted_at_utc"]
+        == alias_artifact["provenance"]["fitted_at_utc"]
+    )
