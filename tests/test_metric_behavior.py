@@ -25,10 +25,10 @@ class TestPerfectPrediction:
         """Test 19: perfect prediction - binary."""
         y_true = np.array(["O", "O", "F", "F"])
         y_pred = np.array(["O", "O", "F", "F"])
-        classes = ["O", "F"]
+        labels = ["O", "F"]
+        log_loss_class_order = ["F", "O"]
 
-        # Perfect probabilities - columns must match lexicographic order of classes
-        # classes = ["F", "O"] lexicographically
+        # Perfect probabilities - columns match lexicographic log_loss order ["F", "O"]
         y_proba = np.array(
             [
                 [0.1, 0.9],  # True O, prob for O is 0.9
@@ -41,30 +41,30 @@ class TestPerfectPrediction:
         assert accuracy_score(y_true, y_pred) == 1.0
         assert (
             recall_score(
-                y_true, y_pred, labels=classes, average="macro", zero_division=0
+                y_true, y_pred, labels=labels, average="macro", zero_division=0
             )
             == 1.0
         )
         assert (
             precision_score(
-                y_true, y_pred, labels=classes, average="macro", zero_division=0
+                y_true, y_pred, labels=labels, average="macro", zero_division=0
             )
             == 1.0
         )
         assert (
-            f1_score(y_true, y_pred, labels=classes, average="macro", zero_division=0)
+            f1_score(y_true, y_pred, labels=labels, average="macro", zero_division=0)
             == 1.0
         )
         assert (
             f1_score(
-                y_true, y_pred, labels=classes, average="weighted", zero_division=0
+                y_true, y_pred, labels=labels, average="weighted", zero_division=0
             )
             == 1.0
         )
         assert matthews_corrcoef(y_true, y_pred) == 1.0
 
         # Log loss should be low but not zero (no exact 0/1 probs)
-        ll = log_loss(y_true, y_proba, labels=classes)
+        ll = log_loss(y_true, y_proba, labels=log_loss_class_order)
         assert ll > 0
         assert ll < 0.5
 
@@ -72,10 +72,10 @@ class TestPerfectPrediction:
         """Test 19: perfect prediction - multiclass."""
         y_true = np.array(["O", "B", "G", "O", "B", "G"])
         y_pred = np.array(["O", "B", "G", "O", "B", "G"])
-        classes = ["O", "B", "G"]
+        labels = ["O", "B", "G"]
+        log_loss_class_order = ["B", "G", "O"]
 
-        # Perfect probabilities - columns must match lexicographic order of classes
-        # classes = ["B", "G", "O"] lexicographically
+        # Perfect probabilities - columns match lexicographic log_loss order ["B", "G", "O"]
         y_proba = np.array(
             [
                 [0.05, 0.05, 0.9],  # True O, prob for O is 0.9
@@ -90,29 +90,29 @@ class TestPerfectPrediction:
         assert accuracy_score(y_true, y_pred) == 1.0
         assert (
             recall_score(
-                y_true, y_pred, labels=classes, average="macro", zero_division=0
+                y_true, y_pred, labels=labels, average="macro", zero_division=0
             )
             == 1.0
         )
         assert (
             precision_score(
-                y_true, y_pred, labels=classes, average="macro", zero_division=0
+                y_true, y_pred, labels=labels, average="macro", zero_division=0
             )
             == 1.0
         )
         assert (
-            f1_score(y_true, y_pred, labels=classes, average="macro", zero_division=0)
+            f1_score(y_true, y_pred, labels=labels, average="macro", zero_division=0)
             == 1.0
         )
         assert (
             f1_score(
-                y_true, y_pred, labels=classes, average="weighted", zero_division=0
+                y_true, y_pred, labels=labels, average="weighted", zero_division=0
             )
             == 1.0
         )
         assert matthews_corrcoef(y_true, y_pred) == 1.0
 
-        ll = log_loss(y_true, y_proba, labels=classes)
+        ll = log_loss(y_true, y_proba, labels=log_loss_class_order)
         assert ll > 0
         assert ll < 0.5
 

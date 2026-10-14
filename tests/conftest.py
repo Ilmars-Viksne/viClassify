@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from viclassify_cli import ClassificationAnalysis, Config
+from viclassify_cli import ClassificationAnalysis, Config, OutputTransaction
 
 # =============================================================================
 # Deterministic Dataset Fixtures
@@ -240,6 +240,7 @@ def create_analysis(
     test_fraction: float = 0.25,
     cv_folds: int = 2,
     grids: dict[str, dict[str, list[Any]]] | None = None,
+    transaction: OutputTransaction | None = None,
 ) -> ClassificationAnalysis:
     """Create a ClassificationAnalysis with minimal grids for fast testing."""
     cfg = Config(
@@ -257,10 +258,11 @@ def create_analysis(
         near_constant_threshold=0.99,
         selection_metric="macro_f1",
     )
-    analysis = ClassificationAnalysis(cfg)
-    if grids is not None:
-        analysis.grids = grids
-    return analysis
+    return ClassificationAnalysis(
+        cfg,
+        transaction=transaction,
+        grid_overrides=grids,
+    )
 
 
 def run_analysis_stages(
@@ -333,10 +335,8 @@ def compute_expected_metrics(
     }
 
     if y_proba is not None:
-        try:
-            metrics["log_loss"] = log_loss(y_true, y_proba, labels=classes)
-        except ValueError:
-            metrics["log_loss"] = np.nan
+        log_loss_labels = sorted(classes, key=str)
+        metrics["log_loss"] = log_loss(y_true, y_proba, labels=log_loss_labels)
 
     return metrics
 

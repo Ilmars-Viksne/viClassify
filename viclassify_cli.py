@@ -175,6 +175,16 @@ class OutputTransaction:
 
     def prepare(self) -> Path:
         """Inspect paths and set up the staging directory."""
+        if self._committed:
+            raise RuntimeError(
+                "A committed transaction cannot be prepared again."
+            )
+
+        if self._prepared:
+            raise RuntimeError(
+                "Output transaction has already been prepared."
+            )
+
         self._validate_path_safety()
 
         if self.final_path.exists():
@@ -294,6 +304,21 @@ class OutputTransaction:
                 f"unexpected entries: {unexpected_in_manifest}"
             )
 
+        actual_files = {
+            path.relative_to(self.staging_path).as_posix()
+            for path in self.staging_path.rglob("*")
+            if path.is_file()
+        }
+
+        if actual_files != manifest_entries:
+            unlisted_files = sorted(actual_files - manifest_entries)
+            missing_files = sorted(manifest_entries - actual_files)
+            raise RuntimeError(
+                "Staged filesystem contents do not match the manifest. "
+                f"Unlisted files: {unlisted_files}; "
+                f"missing files: {missing_files}"
+            )
+
         for rel_file in sorted(manifest_entries):
             rel_path = Path(rel_file)
             if rel_path.is_absolute() or ".." in rel_path.parts:
@@ -326,8 +351,15 @@ class OutputTransaction:
 
     def commit(self, generated_files: set[str]) -> None:
         """Commit staged output to final directory atomically."""
+        if self._committed:
+            raise RuntimeError(
+                "Output transaction has already been committed."
+            )
+
         if not self._prepared:
-            raise RuntimeError("Transaction was not prepared.")
+            raise RuntimeError(
+                "Output transaction has not been prepared."
+            )
 
         self.validate_staged_output(generated_files)
 
@@ -355,9 +387,15 @@ class OutputTransaction:
             shutil.rmtree(self.backup_path, ignore_errors=True)
 
         self._committed = True
+        self._prepared = False
 
     def rollback(self) -> None:
         """Remove staging directory and restore backup if needed."""
+        if self._committed:
+            raise RuntimeError(
+                "A committed transaction cannot be rolled back."
+            )
+
         if self.staging_path.exists():
             shutil.rmtree(self.staging_path, ignore_errors=True)
 
@@ -366,6 +404,9 @@ class OutputTransaction:
                 os.rename(self.backup_path, self.final_path)
             else:
                 shutil.rmtree(self.backup_path, ignore_errors=True)
+
+        self._prepared = False
+        self._committed = False
 
 
 class ClassificationAnalysis:
@@ -466,7 +507,7 @@ class ClassificationAnalysis:
             self.source_sha256 = hash_file(Path(__file__).resolve())
         return self.input_sha256, self.source_sha256
 
-    def get_provenance_block(self) -> dict[str, Any]:
+    def get_provenance_block(self, *, fitted_at_utc: str) -> dict[str, Any]:
         input_sha256, source_sha256 = self.compute_hashes()
         run_id = self.transaction.transaction_id if self.transaction else "unknown"
         return {
@@ -474,6 +515,7 @@ class ClassificationAnalysis:
             "artifact_schema_version": "1.0",
             "run_id": run_id,
             "created_at_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "fitted_at_utc": fitted_at_utc,
             "input_filename": self.cfg.data.name,
             "input_sha256": input_sha256,
             "source_sha256": source_sha256,
@@ -570,7 +612,7 @@ class ClassificationAnalysis:
             )
             metrics["log_loss_status"] = "calculated"
             metrics["log_loss_error"] = ""
-        except (ValueError, TypeError, Exception) as exc:
+        except Exception as exc:
             proba_arr = np.asarray(probabilities)
             shape_str = (
                 str(proba_arr.shape) if hasattr(proba_arr, "shape") else "unknown"
@@ -702,17 +744,33 @@ class ClassificationAnalysis:
 
         return ranked
 
+    def prepare_output(self) -> Path:
+        if self.working_output_dir is not None:
+            raise RuntimeError(
+                "Output has already been prepared for this analysis instance."
+            )
+
+        if self.transaction is None:
+            self.transaction = OutputTransaction(
+                data_path=self.cfg.data,
+                final_path=self.cfg.output,
+                policy=self.cfg.output_policy,
+            )
+
+        self.working_output_dir = self.transaction.prepare()
+        return self.working_output_dir
+
     def path(self, name: str) -> Path:
         if self.working_output_dir is None:
-            if self.transaction is None:
-                self.transaction = OutputTransaction(
-                    data_path=self.cfg.data,
-                    final_path=self.cfg.output,
-                    policy=self.cfg.output_policy,
-                )
-            self.working_output_dir = self.transaction.prepare()
-        self.generated_files.add(name)
-        return self.working_output_dir / name
+            raise RuntimeError(
+                "Output transaction has not been prepared. "
+                "Call prepare_output() or run() before writing artifacts."
+            )
+
+        normalized_name = Path(name).as_posix()
+        self.generated_files.add(normalized_name)
+
+        return self.working_output_dir / normalized_name
 
     @staticmethod
     def slug(name: str) -> str:
@@ -1792,9 +1850,12 @@ class ClassificationAnalysis:
                 .set_params(**self.best_params[name])
                 .fit(X_train, y_train)
             )
+            fitted_at_utc = datetime.datetime.now(
+                datetime.timezone.utc
+            ).isoformat()
 
             self.evaluation_models[name] = model
-            self.export_evaluation_model(name, model)
+            self.export_evaluation_model(name, model, fitted_at_utc=fitted_at_utc)
 
             pred = model.predict(X_test)
             proba = model.predict_proba(X_test)
@@ -1942,6 +2003,8 @@ class ClassificationAnalysis:
         self,
         name: str,
         model: Pipeline,
+        *,
+        fitted_at_utc: str,
     ) -> None:
         classifier = model.named_steps["classifier"]
         estimator_classes = list(classifier.classes_)
@@ -1955,7 +2018,7 @@ class ClassificationAnalysis:
             "estimator_class_order": estimator_classes,
             "selection_metric": (self.cfg.selection_metric),
             "best_parameters": (self.best_params[name]),
-            "provenance": self.get_provenance_block(),
+            "provenance": self.get_provenance_block(fitted_at_utc=fitted_at_utc),
             "model_context": {
                 "model_role": "chronological_training_evaluation_model",
                 "features": list(self.cfg.features),
@@ -2466,9 +2529,14 @@ class ClassificationAnalysis:
         )
 
         manifest: list[dict[str, Any]] = []
+        production_fitted_timestamps: dict[str, str] = {}
 
         for name, pipeline in self.models.items():
             production = clone(pipeline).set_params(**self.best_params[name]).fit(X, y)
+            fitted_at_utc = datetime.datetime.now(
+                datetime.timezone.utc
+            ).isoformat()
+            production_fitted_timestamps[name] = fitted_at_utc
 
             self.production_models[name] = production
 
@@ -2485,7 +2553,7 @@ class ClassificationAnalysis:
                 "estimator_class_order": (estimator_classes),
                 "selection_metric": (self.cfg.selection_metric),
                 "best_parameters": (self.best_params[name]),
-                "provenance": self.get_provenance_block(),
+                "provenance": self.get_provenance_block(fitted_at_utc=fitted_at_utc),
                 "model_context": {
                     "model_role": "production_full_data_refit",
                     "features": list(self.cfg.features),
@@ -2538,6 +2606,7 @@ class ClassificationAnalysis:
         cv_selected_model = self.production_models[cv_selected_name]
 
         cv_selected_classes = list(cv_selected_model.named_steps["classifier"].classes_)
+        cv_selected_fitted_at_utc = production_fitted_timestamps[cv_selected_name]
 
         cv_selected_artifact = {
             "model": cv_selected_model,
@@ -2560,7 +2629,7 @@ class ClassificationAnalysis:
             "holdout_used_for_selection": False,
             "nested_cv": False,
             "production_refit_data": "all_available_rows",
-            "provenance": self.get_provenance_block(),
+            "provenance": self.get_provenance_block(fitted_at_utc=cv_selected_fitted_at_utc),
             "model_context": {
                 "model_role": "cv_selected_production_full_data_refit",
                 "features": list(self.cfg.features),
@@ -2776,13 +2845,7 @@ class ClassificationAnalysis:
         )
 
     def run(self) -> None:
-        if self.transaction is None:
-            self.transaction = OutputTransaction(
-                data_path=self.cfg.data,
-                final_path=self.cfg.output,
-                policy=self.cfg.output_policy,
-            )
-        self.working_output_dir = self.transaction.prepare()
+        self.prepare_output()
 
         self.started_at_utc = datetime.datetime.now(datetime.timezone.utc).isoformat()
         self.write_run_status("running")

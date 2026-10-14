@@ -141,8 +141,7 @@ class TestOutputTransaction:
             output_policy="fail",
         )
 
-        analysis = ClassificationAnalysis(cfg)
-        analysis.grids = minimal_grids
+        analysis = ClassificationAnalysis(cfg, grid_overrides=minimal_grids)
         analysis.run()
 
         assert output_dir.exists()
@@ -215,8 +214,9 @@ class TestOutputTransaction:
             output_policy="fail",
         )
 
-        analysis_good = ClassificationAnalysis(cfg_good)
-        analysis_good.grids = minimal_grids
+        analysis_good = ClassificationAnalysis(
+            cfg_good, grid_overrides=minimal_grids
+        )
         analysis_good.run()
 
         # Add a marker file to existing output
@@ -276,8 +276,7 @@ class TestOutputTransaction:
             output_policy="fail",
         )
 
-        analysis1 = ClassificationAnalysis(cfg1)
-        analysis1.grids = minimal_grids
+        analysis1 = ClassificationAnalysis(cfg1, grid_overrides=minimal_grids)
         analysis1.run()
 
         stale_file = output_dir / "stale_from_run_1.txt"
@@ -298,8 +297,7 @@ class TestOutputTransaction:
             output_policy="replace",
         )
 
-        analysis2 = ClassificationAnalysis(cfg2)
-        analysis2.grids = minimal_grids
+        analysis2 = ClassificationAnalysis(cfg2, grid_overrides=minimal_grids)
         analysis2.run()
 
         assert output_dir.exists()
@@ -327,3 +325,100 @@ class TestOutputTransaction:
         txn3 = OutputTransaction(data_file, cwd, policy="fail")
         with pytest.raises(ValueError, match="current working directory"):
             txn3.prepare()
+
+    def test_unregistered_physical_files_rejected(self, tmp_path):
+        """Test validate_staged_output rejects unlisted physical files at root and in nested dirs."""
+        data_file = tmp_path / "data.csv"
+        data_file.write_text("X1,X2,Y\n1,10,O\n2,20,F\n", encoding="utf-8")
+        output_dir = tmp_path / "out_unregistered"
+
+        txn = OutputTransaction(data_file, output_dir, policy="fail")
+        staging = txn.prepare()
+
+        (staging / "run_metadata.json").write_text("{}", encoding="utf-8")
+        (staging / "run_status.json").write_text("{}", encoding="utf-8")
+        (staging / "generated_files.txt").write_text(
+            "generated_files.txt\nrun_status.json\nrun_metadata.json\n", encoding="utf-8"
+        )
+
+        # 1. Unregistered file at root
+        (staging / "unregistered.txt").write_text("unregistered", encoding="utf-8")
+        with pytest.raises(RuntimeError, match="Staged filesystem contents do not match the manifest"):
+            txn.validate_staged_output({"run_metadata.json"})
+
+        # Remove root unregistered file and add nested unregistered file
+        (staging / "unregistered.txt").unlink()
+        nested_dir = staging / "nested"
+        nested_dir.mkdir()
+        (nested_dir / "unregistered.txt").write_text("nested unregistered", encoding="utf-8")
+
+        with pytest.raises(RuntimeError, match="Staged filesystem contents do not match the manifest"):
+            txn.validate_staged_output({"run_metadata.json"})
+
+        txn.rollback()
+
+    def test_transaction_state_lifecycle_protections(self, tmp_path):
+        """Test transaction state invariants and method guards."""
+        data_file = tmp_path / "data.csv"
+        data_file.write_text("X1,X2,Y\n1,10,O\n2,20,F\n", encoding="utf-8")
+        output_dir = tmp_path / "out_state"
+
+        txn = OutputTransaction(data_file, output_dir, policy="fail")
+
+        # 1. Commit before prepare fails
+        with pytest.raises(RuntimeError, match="Output transaction has not been prepared"):
+            txn.commit(set())
+
+        # 2. Prepare transaction
+        staging = txn.prepare()
+        (staging / "run_metadata.json").write_text("{}", encoding="utf-8")
+        (staging / "run_status.json").write_text("{}", encoding="utf-8")
+        (staging / "generated_files.txt").write_text(
+            "generated_files.txt\nrun_status.json\nrun_metadata.json\n", encoding="utf-8"
+        )
+
+        # 3. Repeated prepare fails
+        with pytest.raises(RuntimeError, match="Output transaction has already been prepared"):
+            txn.prepare()
+
+        # 4. Commit transaction
+        txn.commit({"run_metadata.json"})
+
+        # 5. Repeated commit fails
+        with pytest.raises(RuntimeError, match="Output transaction has already been committed"):
+            txn.commit({"run_metadata.json"})
+
+        # 6. Prepare after commit fails
+        with pytest.raises(RuntimeError, match="A committed transaction cannot be prepared again"):
+            txn.prepare()
+
+        # 7. Rollback after commit fails
+        with pytest.raises(RuntimeError, match="A committed transaction cannot be rolled back"):
+            txn.rollback()
+
+    def test_path_raises_runtime_error_if_not_prepared(self, tmp_path):
+        """Test path() raises RuntimeError if output has not been prepared."""
+        data_file = tmp_path / "data.csv"
+        data_file.write_text("X1,X2,Y\n1,10,O\n2,20,F\n", encoding="utf-8")
+        output_dir = tmp_path / "out_unprepared"
+
+        cfg = Config(
+            data=data_file,
+            output=output_dir,
+            target="Y",
+            features=("X1", "X2"),
+            class_order=None,
+            test_fraction=0.25,
+            cv_folds=2,
+            random_state=42,
+            n_jobs=1,
+            permutation_repeats=1,
+            dpi=50,
+            output_policy="fail",
+        )
+
+        analysis = ClassificationAnalysis(cfg)
+        with pytest.raises(
+            RuntimeError, match="Output transaction has not been prepared"
+        ):
+            analysis.path("test.csv")
