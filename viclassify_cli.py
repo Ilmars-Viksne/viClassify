@@ -152,7 +152,7 @@ class Config:
 
 
 class OutputTransaction:
-    """Manages transactional output directory staging, validation, and atomic commits."""
+    """Manage staged output validation, promotion, and recovery."""
 
     def __init__(self, data_path: Path, final_path: Path, policy: str = "fail") -> None:
         self.data_path = data_path.resolve()
@@ -372,8 +372,11 @@ class OutputTransaction:
                     f"Registered generated path '{rel_file}' is not a regular file."
                 )
 
-    def commit(self, generated_files: set[str]) -> None:
-        """Commit staged output to final directory atomically."""
+    def commit(
+        self,
+        generated_files: set[str],
+    ) -> None:
+        """Validate and promote staged output to the final directory."""
         if self._committed:
             raise RuntimeError("Output transaction has already been committed.")
 
@@ -2763,6 +2766,9 @@ class ClassificationAnalysis:
             "viclassify_version": __version__,
             "output_schema_version": "1.0",
             "metadata_schema_version": "1.0",
+            "run_id": self.transaction.transaction_id
+            if self.transaction
+            else "unknown",
             "input_sha256": input_sha256,
             "source_sha256": source_sha256,
             "started_at_utc": self.started_at_utc,

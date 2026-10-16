@@ -1,6 +1,7 @@
 """Tests for CV-selected production model selection, artifact, metadata, ranking, and tie-breaking rules."""
 
 import json
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import joblib
@@ -741,17 +742,72 @@ def test_25_provenance_contains_created_at_and_fitted_at_utc(
     prod_artifact = joblib.load(output_dir / "production_logistic_regression.joblib")
     alias_artifact = joblib.load(output_dir / "cv_selected_production_model.joblib")
 
-    for art in (eval_artifact, prod_artifact, alias_artifact):
-        prov = art["provenance"]
-        assert "created_at_utc" in prov
-        assert "fitted_at_utc" in prov
-        assert isinstance(prov["created_at_utc"], str)
-        assert isinstance(prov["fitted_at_utc"], str)
-
     selected_name = analysis.cv_selected_model_name
     slug = analysis.slug(selected_name)
-    selected_fam = joblib.load(output_dir / f"production_{slug}.joblib")
+    selected_production_artifact = joblib.load(output_dir / f"production_{slug}.joblib")
+
+    for artifact in (eval_artifact, prod_artifact, alias_artifact):
+        provenance = artifact["provenance"]
+        created_at = datetime.fromisoformat(provenance["created_at_utc"])
+        fitted_at = datetime.fromisoformat(provenance["fitted_at_utc"])
+        assert created_at.tzinfo is not None
+        assert fitted_at.tzinfo is not None
+        assert created_at.utcoffset() == timedelta(0)
+        assert fitted_at.utcoffset() == timedelta(0)
+        assert fitted_at <= created_at
+        assert provenance["viclassify_version"]
+        assert provenance["artifact_schema_version"]
+        assert provenance["run_id"]
+        assert len(provenance["input_sha256"]) == 64
+        assert len(provenance["source_sha256"]) == 64
+        assert provenance["python_version"]
+        assert {
+            "numpy",
+            "pandas",
+            "scipy",
+            "scikit_learn",
+            "joblib",
+        } <= provenance["package_versions"].keys()
+
+    expected_features = list(analysis.cfg.features)
+    expected_target = analysis.cfg.target
+    evaluation_context = eval_artifact["model_context"]
     assert (
-        selected_fam["provenance"]["fitted_at_utc"]
+        evaluation_context["training_partition"] == "chronological_training_partition"
+    )
+    assert evaluation_context["row_count_fitted"] == len(analysis.train_indices)
+    assert evaluation_context["features"] == expected_features
+    assert evaluation_context["target"] == expected_target
+    assert evaluation_context["model_role"] == "chronological_training_evaluation_model"
+    assert eval_artifact["estimator_class_order"]
+
+    production_context = prod_artifact["model_context"]
+    assert production_context["training_partition"] == "all_available_rows"
+    assert production_context["row_count_fitted"] == len(analysis.data)
+    assert production_context["features"] == expected_features
+    assert production_context["target"] == expected_target
+    assert production_context["model_role"] == "production_full_data_refit"
+    assert prod_artifact["estimator_class_order"]
+
+    alias_context = alias_artifact["model_context"]
+    selected_context = selected_production_artifact["model_context"]
+    assert alias_artifact["model_type"] == selected_production_artifact["model_type"]
+    assert alias_artifact["features"] == selected_production_artifact["features"]
+    assert alias_artifact["features"] == expected_features
+    assert alias_context["target"] == selected_context["target"] == expected_target
+    assert (
+        alias_artifact["estimator_class_order"]
+        == selected_production_artifact["estimator_class_order"]
+    )
+    assert alias_context["model_role"] == "cv_selected_production_full_data_refit"
+    assert alias_context["model_role"] == alias_artifact["model_role"]
+    assert (
+        selected_production_artifact["provenance"]["fitted_at_utc"]
         == alias_artifact["provenance"]["fitted_at_utc"]
     )
+
+    with (output_dir / "run_metadata.json").open("r", encoding="utf-8") as file:
+        run_metadata = json.load(file)
+    assert run_metadata["run_id"] == alias_artifact["provenance"]["run_id"]
+    assert run_metadata["started_at_utc"]
+    assert run_metadata["completed_at_utc"]

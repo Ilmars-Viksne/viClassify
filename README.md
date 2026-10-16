@@ -778,7 +778,15 @@ run_metadata.json
 generated_files.txt
 ```
 
-`run_metadata.json` records application version `0.4.0`, input file hash (`input_sha256`), source code hash (`source_sha256`), execution timestamps (`started_at_utc`, `completed_at_utc`), configuration, observed reporting class order, validation and interpretation notes, operating system and platform details, versions of Python, NumPy, pandas, SciPy, scikit-learn, and joblib, and the complete `model_family_cv_ranking` list sorted by `cv_selection_rank` along with the authoritative `tie_breaking_rule`.
+`run_metadata.json` contains run-level metadata: application version `0.4.0`, transaction run ID, input and source hashes (`input_sha256`, `source_sha256`), start and completion timestamps (`started_at_utc`, `completed_at_utc`), configuration, observed reporting class order, validation and interpretation notes, operating system and platform details, Python and package versions, and the complete `model_family_cv_ranking` list sorted by `cv_selection_rank` along with the authoritative `tie_breaking_rule`.
+
+Each `.joblib` artifact also contains artifact-level provenance and model context. Provenance includes `created_at_utc`, `fitted_at_utc`, viClassify and artifact schema versions, run ID, input and source hashes, Python and package versions, and platform details. Model context includes model role, training partition, fitted row count, feature order, target, reporting and estimator class orders, selection metric, best parameters, and random state. `fitted_at_utc` records when that estimator was fitted; the final run completion time is recorded in `run_metadata.json` and is not embedded in artifacts serialized before completion. The selected production alias has role `cv_selected_production_full_data_refit` and reuses the selected production estimator, including its original fitting timestamp.
+
+### Output transaction behavior
+
+Staging is created beside the final output directory so promotion can use same-filesystem rename operations. The `fail` policy rejects a nonempty destination. The `replace` policy first moves existing output to a transaction-specific backup, then promotes staging to the final path. If promotion fails, restoration of the backup is attempted.
+
+Staged output is promoted using same-filesystem rename operations. Under the replace policy, the previous output is first moved to a transaction-specific backup and restored if promotion fails. Individual rename operations are atomic on supported same-filesystem configurations, but the complete backup-and-promote sequence is not a single atomic swap. Operating-system and filesystem support affect rename behavior, and the sequence includes a temporary interval in which the final path may be absent.
 
 ## Loading an exported model
 
@@ -904,7 +912,7 @@ complete output directory
 requirements or environment lock file
 ```
 
-Every completed run records run-level start and completion timestamps in `run_metadata.json`. Each `.joblib` artifact contains its own `created_at_utc` and `fitted_at_utc` timestamps, together with the run ID, input hash, source hash, platform information, and package versions. Staging directory commits use a same-filesystem `Path.rename()` atomic swap pattern.
+Every completed run records run-level start and completion timestamps in `run_metadata.json`. Each `.joblib` artifact records its own creation time and the time its estimator was fitted. See [Metadata](#metadata) for the run-level and artifact-level fields. The selected production alias keeps the original production estimator's fitting timestamp.
 
 ## Developer guide
 
