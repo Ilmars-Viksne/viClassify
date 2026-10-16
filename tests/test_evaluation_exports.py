@@ -13,7 +13,11 @@ from sklearn.metrics import (
     recall_score,
 )
 
-from viclassify_cli import ClassificationAnalysis, Config
+from viclassify_cli import (
+    ClassificationAnalysis,
+    Config,
+    align_probabilities_for_log_loss,
+)
 
 
 @pytest.mark.integration
@@ -67,53 +71,84 @@ class TestCombinedHoldoutMetrics:
 
                 y_true = preds["Y"].values
                 y_pred = preds["Predicted_Y"].values
-                classes = analysis.classes
+                reporting_class_order = analysis.classes
 
-                # Get probability columns
-                proba_cols = [c for c in preds.columns if c.startswith("Probability_")]
-                y_proba = preds[proba_cols].values
+                probability_columns = [
+                    column
+                    for column in preds.columns
+                    if column.startswith("Probability_")
+                ]
+                probability_class_order = [
+                    column.removeprefix("Probability_")
+                    for column in probability_columns
+                ]
+                probabilities = preds[probability_columns].to_numpy()
 
                 # Recompute metrics
                 expected = {
                     "accuracy": accuracy_score(y_true, y_pred),
                     "balanced_accuracy": recall_score(
-                        y_true, y_pred, labels=classes, average="macro", zero_division=0
+                        y_true,
+                        y_pred,
+                        labels=reporting_class_order,
+                        average="macro",
+                        zero_division=0,
                     ),
                     "macro_precision": precision_score(
-                        y_true, y_pred, labels=classes, average="macro", zero_division=0
+                        y_true,
+                        y_pred,
+                        labels=reporting_class_order,
+                        average="macro",
+                        zero_division=0,
                     ),
                     "macro_recall": recall_score(
-                        y_true, y_pred, labels=classes, average="macro", zero_division=0
+                        y_true,
+                        y_pred,
+                        labels=reporting_class_order,
+                        average="macro",
+                        zero_division=0,
                     ),
                     "macro_f1": f1_score(
-                        y_true, y_pred, labels=classes, average="macro", zero_division=0
+                        y_true,
+                        y_pred,
+                        labels=reporting_class_order,
+                        average="macro",
+                        zero_division=0,
                     ),
                     "weighted_f1": f1_score(
                         y_true,
                         y_pred,
-                        labels=classes,
+                        labels=reporting_class_order,
                         average="weighted",
                         zero_division=0,
                     ),
                     "mcc": matthews_corrcoef(y_true, y_pred),
                 }
 
-                try:
-                    expected["log_loss"] = log_loss(y_true, y_proba, labels=classes)
-                except ValueError:
-                    expected["log_loss"] = np.nan
+                aligned_probabilities, log_loss_class_order = (
+                    align_probabilities_for_log_loss(
+                        probabilities,
+                        probability_class_order,
+                    )
+                )
+                expected_log_loss = float(
+                    log_loss(
+                        y_true,
+                        aligned_probabilities,
+                        labels=log_loss_class_order,
+                    )
+                )
+                actual_log_loss = float(row["log_loss"])
+                assert np.isfinite(expected_log_loss)
+                assert np.isfinite(actual_log_loss)
+                expected["log_loss"] = expected_log_loss
 
                 # Compare
                 for metric, expected_val in expected.items():
                     actual_val = row[metric]
-                    if np.isnan(expected_val):
-                        assert np.isnan(actual_val), (
-                            f"{model_name}: {metric} expected NaN but got {actual_val}"
-                        )
-                    else:
-                        assert actual_val == pytest.approx(expected_val, rel=1e-6), (
-                            f"{model_name}: {metric} mismatch: expected {expected_val}, got {actual_val}"
-                        )
+                    assert actual_val == pytest.approx(expected_val, rel=1e-6), (
+                        f"{model_name}: {metric} mismatch: expected {expected_val}, got {actual_val}"
+                    )
         finally:
             if analysis.transaction is not None:
                 analysis.transaction.rollback()

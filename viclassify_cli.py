@@ -628,15 +628,17 @@ class ClassificationAnalysis:
                 estimator_classes=estimator_classes,
                 model_name=model_name,
             )
-            aligned_probabilities, log_loss_classes = align_probabilities_for_log_loss(
-                probabilities=probabilities,
-                estimator_classes=estimator_classes,
+            aligned_probabilities, log_loss_class_order = (
+                align_probabilities_for_log_loss(
+                    probabilities=probabilities,
+                    estimator_classes=estimator_classes,
+                )
             )
             metrics["log_loss"] = float(
                 log_loss(
                     y_true,
                     aligned_probabilities,
-                    labels=log_loss_classes,
+                    labels=log_loss_class_order,
                 )
             )
             metrics["log_loss_status"] = "calculated"

@@ -2,6 +2,7 @@
 
 import numpy as np
 import pytest
+from conftest import compute_expected_metrics
 from sklearn.metrics import (
     accuracy_score,
     f1_score,
@@ -386,8 +387,8 @@ class TestLogLossProbabilityOrder:
 
     def test_align_probabilities_for_log_loss(self):
         """Test align_probabilities_for_log_loss reorders columns correctly."""
-        estimator_classes = ["O", "B", "G"]
-        # Probabilities in estimator_classes order: O, B, G
+        estimator_class_order = ["O", "B", "G"]
+        # Probabilities in estimator_class_order: O, B, G
         probabilities = np.array(
             [
                 [0.8, 0.1, 0.1],  # True O
@@ -396,11 +397,11 @@ class TestLogLossProbabilityOrder:
             ]
         )
 
-        aligned_proba, log_loss_classes = align_probabilities_for_log_loss(
-            probabilities, estimator_classes
+        aligned_proba, log_loss_class_order = align_probabilities_for_log_loss(
+            probabilities, estimator_class_order
         )
 
-        assert log_loss_classes == ["B", "G", "O"]
+        assert log_loss_class_order == ["B", "G", "O"]
         # Column mapping: B is index 1, G is index 2, O is index 0
         expected_aligned = np.array(
             [
@@ -411,18 +412,75 @@ class TestLogLossProbabilityOrder:
         )
         np.testing.assert_allclose(aligned_proba, expected_aligned)
 
+    def test_expected_metrics_requires_probability_order(self):
+        with pytest.raises(ValueError, match="probability_class_order is required"):
+            compute_expected_metrics(
+                np.array(["O", "B"]),
+                np.array(["O", "B"]),
+                np.array([[0.8, 0.2], [0.2, 0.8]]),
+            )
+
+    @pytest.mark.parametrize(
+        "probabilities, probability_class_order, message",
+        [
+            (np.array([0.8, 0.2]), ["O", "B"], "two-dimensional"),
+            (np.array([[0.8, 0.2]]), ["O", "B"], "row count"),
+            (np.array([[0.8, 0.2], [0.2, 0.8]]), ["O"], "column count"),
+            (
+                np.array([[0.8, 0.2], [0.2, 0.8]]),
+                ["O", "O"],
+                "duplicate labels",
+            ),
+        ],
+    )
+    def test_expected_metrics_rejects_invalid_probability_inputs(
+        self, probabilities, probability_class_order, message
+    ):
+        with pytest.raises(ValueError, match=message):
+            compute_expected_metrics(
+                np.array(["O", "B"]),
+                np.array(["O", "B"]),
+                probabilities,
+                classes=["O", "B"],
+                probability_class_order=probability_class_order,
+            )
+
+    def test_expected_metrics_aligns_nonlexicographic_probability_order(self):
+        estimator_class_order = ["O", "B", "G"]
+        y_true = np.array(["O", "B", "G"])
+        y_pred = np.array(["O", "B", "G"])
+        probabilities = np.array(
+            [
+                [0.62, 0.23, 0.15],
+                [0.18, 0.71, 0.11],
+                [0.13, 0.19, 0.68],
+            ]
+        )
+
+        metrics = compute_expected_metrics(
+            y_true,
+            y_pred,
+            probabilities,
+            classes=estimator_class_order,
+            probability_class_order=estimator_class_order,
+        )
+
+        expected_log_loss = -np.log([0.62, 0.71, 0.68]).mean()
+        assert np.isfinite(metrics["log_loss"])
+        assert metrics["log_loss"] == pytest.approx(expected_log_loss)
+
     def test_non_lexicographical_estimator_class_order(self):
         """Test calculate_holdout_metrics with non-lexicographical estimator order.
 
-        estimator_classes = ["O", "B", "G"] (non-sorted)
+        estimator_class_order = ["O", "B", "G"] (non-sorted)
         probabilities supplied in estimator order [O, B, G].
         """
-        estimator_classes = ["O", "B", "G"]
+        estimator_class_order = ["O", "B", "G"]
         y_true = np.array(["O", "B", "G", "O"])
         y_pred = np.array(["O", "B", "G", "O"])
         reporting_classes = ["O", "B", "G"]
 
-        # Probabilities in estimator_classes order: O, B, G
+        # Probabilities in estimator_class_order: O, B, G
         y_proba = np.array(
             [
                 [0.8, 0.1, 0.1],  # True O
@@ -437,7 +495,7 @@ class TestLogLossProbabilityOrder:
             y_pred=y_pred,
             probabilities=y_proba,
             reporting_classes=reporting_classes,
-            estimator_classes=estimator_classes,
+            estimator_classes=estimator_class_order,
             model_name="NonLexModel",
         )
 
@@ -446,7 +504,7 @@ class TestLogLossProbabilityOrder:
 
     def test_unusual_string_labels(self):
         """Test probability alignment with unusual string class labels."""
-        estimator_classes = ["orange", "banana", "apple"]
+        estimator_class_order = ["orange", "banana", "apple"]
         y_true = np.array(["orange", "banana", "apple"])
         y_proba = np.array(
             [
@@ -456,11 +514,11 @@ class TestLogLossProbabilityOrder:
             ]
         )
 
-        aligned_proba, sorted_classes = align_probabilities_for_log_loss(
-            y_proba, estimator_classes
+        aligned_proba, log_loss_class_order = align_probabilities_for_log_loss(
+            y_proba, estimator_class_order
         )
 
-        assert sorted_classes == ["apple", "banana", "orange"]
+        assert log_loss_class_order == ["apple", "banana", "orange"]
         # apple is col 2, banana is col 1, orange is col 0
         expected_first_row = [0.05, 0.05, 0.9]
         np.testing.assert_allclose(aligned_proba[0], expected_first_row)
@@ -469,8 +527,8 @@ class TestLogLossProbabilityOrder:
             y_true=y_true,
             y_pred=y_true,
             probabilities=y_proba,
-            reporting_classes=estimator_classes,
-            estimator_classes=estimator_classes,
+            reporting_classes=estimator_class_order,
+            estimator_classes=estimator_class_order,
             model_name="FruitModel",
         )
         assert metrics["log_loss"] == pytest.approx(-np.log(0.9))

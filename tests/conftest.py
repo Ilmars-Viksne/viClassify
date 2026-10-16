@@ -306,6 +306,7 @@ def compute_expected_metrics(
     y_pred: np.ndarray,
     y_proba: np.ndarray | None = None,
     classes: list[str] | None = None,
+    probability_class_order: list[str] | None = None,
 ) -> dict[str, float]:
     """Compute expected metric values using sklearn with explicit labels."""
     from sklearn.metrics import (
@@ -341,8 +342,37 @@ def compute_expected_metrics(
     }
 
     if y_proba is not None:
-        log_loss_labels = sorted(classes, key=str)
-        metrics["log_loss"] = log_loss(y_true, y_proba, labels=log_loss_labels)
+        if probability_class_order is None:
+            raise ValueError(
+                "probability_class_order is required when y_proba is supplied"
+            )
+
+        probability_array = np.asarray(y_proba)
+        if probability_array.ndim != 2:
+            raise ValueError("y_proba must be a two-dimensional array")
+        if probability_array.shape[0] != len(y_true):
+            raise ValueError("Probability-row count does not match y_true")
+        if probability_array.shape[1] != len(probability_class_order):
+            raise ValueError(
+                "Probability-column count does not match probability_class_order"
+            )
+        if len(set(probability_class_order)) != len(probability_class_order):
+            raise ValueError("probability_class_order contains duplicate labels")
+
+        source_index = {
+            label: index for index, label in enumerate(probability_class_order)
+        }
+        log_loss_class_order = sorted(probability_class_order, key=str)
+        aligned_probabilities = probability_array[
+            :, [source_index[label] for label in log_loss_class_order]
+        ]
+        metrics["log_loss"] = float(
+            log_loss(
+                y_true,
+                aligned_probabilities,
+                labels=log_loss_class_order,
+            )
+        )
 
     return metrics
 
