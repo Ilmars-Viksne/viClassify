@@ -385,22 +385,61 @@ class OutputTransaction:
 
         self.validate_staged_output(generated_files)
 
-        if self.final_path.exists():
-            # Directory exists (empty under fail policy, or existing under replace policy)
-            if self.policy == "replace":
-                if self.backup_path.exists():
-                    shutil.rmtree(self.backup_path, ignore_errors=True)
-                os.rename(self.final_path, self.backup_path)
-            else:  # fail policy with existing empty directory
-                os.rmdir(self.final_path)
-
+        destination_was_present = False
+        previous_output_backed_up = False
+        previous_output_restored = False
+        empty_destination_removed = False
+        promotion_attempted = False
+        promotion_completed = False
+        failed_operation = "prepare the final output location for promotion"
         try:
+            destination_was_present = self.final_path.exists()
+            if self.policy == "replace" and self.backup_path.exists():
+                raise FileExistsError(
+                    "Transaction backup already exists; refusing to remove a "
+                    "possibly recoverable previous output."
+                )
+
+            if destination_was_present:
+                if self.policy == "replace":
+                    # The stale-backup guard above ensures this path is free.
+                    # Mark before rename to recover even if it moves then raises.
+                    previous_output_backed_up = True
+                    os.rename(self.final_path, self.backup_path)
+                else:  # fail policy allows an existing empty directory
+                    os.rmdir(self.final_path)
+                    empty_destination_removed = True
+
+            failed_operation = "promote staged output"
+            promotion_attempted = True
             os.rename(self.staging_path, self.final_path)
+            promotion_completed = True
+
+            if self.backup_path.exists():
+                failed_operation = "remove the transaction backup after promotion"
+                shutil.rmtree(self.backup_path)
+
+            self._prepared = False
+            self._committed = True
         except Exception as exc:
             recovery_error: Exception | None = None
             try:
-                if self.backup_path.exists() and not self.final_path.exists():
+                if previous_output_backed_up and self.backup_path.exists():
+                    if self.final_path.exists():
+                        shutil.rmtree(self.final_path)
                     os.rename(self.backup_path, self.final_path)
+                    previous_output_restored = True
+                elif (
+                    destination_was_present
+                    and self.policy == "fail"
+                    and (empty_destination_removed or not self.final_path.exists())
+                ):
+                    if self.final_path.exists():
+                        shutil.rmtree(self.final_path)
+                    self.final_path.mkdir(parents=False, exist_ok=False)
+                elif promotion_attempted and not destination_was_present:
+                    if self.final_path.exists():
+                        shutil.rmtree(self.final_path)
             except Exception as restore_exc:  # noqa: BLE001 - recovery must reset state
                 recovery_error = restore_exc
             finally:
@@ -409,19 +448,29 @@ class OutputTransaction:
                 self._prepared = False
                 self._committed = False
 
-            message = f"Failed to commit transaction to '{self.final_path}': {exc}"
+            if (
+                promotion_completed
+                and previous_output_backed_up
+                and not previous_output_restored
+                and not self.backup_path.exists()
+            ):
+                # Backup cleanup completed despite reporting an error. The new
+                # output is already promoted and no old output remains to restore.
+                self._prepared = False
+                self._committed = True
+                return
+
+            message = f"Failed to {failed_operation} at '{self.final_path}': {exc}"
             if recovery_error is not None:
                 message += (
-                    f". Restoring the previous output also failed: {recovery_error}"
+                    f". Restoring the previous output also failed: {recovery_error}."
                 )
+                if self.backup_path.exists():
+                    message += (
+                        " The previous output may remain at backup path "
+                        f"'{self.backup_path}' and may require manual recovery."
+                    )
             raise RuntimeError(message) from exc
-
-        # Clean up backup after successful commit
-        if self.backup_path.exists():
-            shutil.rmtree(self.backup_path, ignore_errors=True)
-
-        self._committed = True
-        self._prepared = False
 
     def rollback(self) -> None:
         """Remove staging directory and restore backup if needed."""

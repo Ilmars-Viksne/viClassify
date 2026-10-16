@@ -446,6 +446,10 @@ class TestOutputTransaction:
 
         assert output_dir.exists()
         assert not (output_dir / "stale_from_run_1.txt").exists()
+        assert analysis2.transaction.committed
+        assert not analysis2.transaction.prepared
+        assert not analysis2.transaction.backup_path.exists()
+        assert (output_dir / "run_metadata.json").exists()
 
     def test_dangerous_output_paths_rejected(self, tmp_path):
         """Test rejection of dangerous output paths (cwd, input path, input parent)."""
@@ -589,6 +593,9 @@ class TestOutputTransaction:
         output_dir = tmp_path / "existing"
         output_dir.mkdir()
         (output_dir / "old.txt").write_text("old output", encoding="utf-8")
+        old_nested = output_dir / "archive" / "keep.bin"
+        old_nested.parent.mkdir()
+        old_nested.write_bytes(b"previous results")
         txn = OutputTransaction(data_file, output_dir, policy="replace")
         staging = txn.prepare()
         _write_valid_staging(staging)
@@ -607,6 +614,12 @@ class TestOutputTransaction:
 
         assert caught.value.__cause__ is promotion_error
         assert (output_dir / "old.txt").read_text(encoding="utf-8") == "old output"
+        assert old_nested.read_bytes() == b"previous results"
+        assert {
+            path.relative_to(output_dir).as_posix()
+            for path in output_dir.rglob("*")
+            if path.is_file()
+        } == {"old.txt", "archive/keep.bin"}
         assert not staging.exists()
         assert not txn.backup_path.exists()
         assert not txn.prepared
@@ -635,13 +648,139 @@ class TestOutputTransaction:
 
         monkeypatch.setattr("viclassify_cli.os.rename", fail_promotion_and_restore)
         with pytest.raises(
-            RuntimeError, match="promotion blocked.*restore blocked"
+            RuntimeError,
+            match="Failed to promote staged output.*restore blocked.*manual recovery",
         ) as caught:
             txn.commit(_valid_generated_files())
 
         assert caught.value.__cause__ is promotion_error
+        assert str(txn.backup_path) in str(caught.value)
         assert not staging.exists()
         assert txn.backup_path.exists()
+        assert not txn.prepared
+        assert not txn.committed
+
+    def test_backup_rename_failure_resets_state_and_cleans_staging(
+        self, tmp_path, monkeypatch
+    ):
+        data_file = tmp_path / "data.csv"
+        data_file.write_text("X,Y\n1,A\n2,B\n", encoding="utf-8")
+        output_dir = tmp_path / "existing"
+        output_dir.mkdir()
+        (output_dir / "old.txt").write_text("old output", encoding="utf-8")
+        txn = OutputTransaction(data_file, output_dir, policy="replace")
+        staging = txn.prepare()
+        _write_valid_staging(staging)
+        rename_error = OSError("backup rename blocked")
+        real_rename = __import__("viclassify_cli").os.rename
+
+        def fail_backup_rename(src, dst):
+            if Path(src) == output_dir and Path(dst) == txn.backup_path:
+                raise rename_error
+            return real_rename(src, dst)
+
+        monkeypatch.setattr("viclassify_cli.os.rename", fail_backup_rename)
+        with pytest.raises(
+            RuntimeError,
+            match="Failed to prepare the final output location for promotion",
+        ) as caught:
+            txn.commit(_valid_generated_files())
+
+        assert caught.value.__cause__ is rename_error
+        assert (output_dir / "old.txt").read_text(encoding="utf-8") == "old output"
+        assert not txn.backup_path.exists()
+        assert not staging.exists()
+        assert not txn.prepared
+        assert not txn.committed
+
+    def test_fail_policy_destination_removal_failure_resets_state(
+        self, tmp_path, monkeypatch
+    ):
+        data_file = tmp_path / "data.csv"
+        data_file.write_text("X,Y\n1,A\n2,B\n", encoding="utf-8")
+        output_dir = tmp_path / "empty-existing"
+        output_dir.mkdir()
+        txn = OutputTransaction(data_file, output_dir, policy="fail")
+        staging = txn.prepare()
+        _write_valid_staging(staging)
+        removal_error = OSError("empty destination removal blocked")
+        real_rmdir = __import__("viclassify_cli").os.rmdir
+
+        def fail_rmdir(path):
+            if Path(path) == output_dir:
+                raise removal_error
+            return real_rmdir(path)
+
+        monkeypatch.setattr("viclassify_cli.os.rmdir", fail_rmdir)
+        with pytest.raises(
+            RuntimeError,
+            match="Failed to prepare the final output location for promotion",
+        ) as caught:
+            txn.commit(_valid_generated_files())
+
+        assert caught.value.__cause__ is removal_error
+        assert output_dir.exists()
+        assert list(output_dir.iterdir()) == []
+        assert not txn.backup_path.exists()
+        assert not staging.exists()
+        assert not txn.prepared
+        assert not txn.committed
+
+    def test_stale_backup_is_preserved_and_commit_aborts_safely(self, tmp_path):
+        data_file = tmp_path / "data.csv"
+        data_file.write_text("X,Y\n1,A\n2,B\n", encoding="utf-8")
+        output_dir = tmp_path / "existing"
+        output_dir.mkdir()
+        (output_dir / "old.txt").write_text("active output", encoding="utf-8")
+        txn = OutputTransaction(data_file, output_dir, policy="replace")
+        staging = txn.prepare()
+        _write_valid_staging(staging)
+        txn.backup_path.mkdir()
+        (txn.backup_path / "recoverable.txt").write_text(
+            "recovery copy", encoding="utf-8"
+        )
+
+        with pytest.raises(RuntimeError, match="Failed to prepare") as caught:
+            txn.commit(_valid_generated_files())
+
+        assert isinstance(caught.value.__cause__, FileExistsError)
+        assert (output_dir / "old.txt").read_text(encoding="utf-8") == "active output"
+        assert (txn.backup_path / "recoverable.txt").read_text(encoding="utf-8") == (
+            "recovery copy"
+        )
+        assert not staging.exists()
+        assert not txn.prepared
+        assert not txn.committed
+
+    def test_backup_cleanup_failure_restores_previous_output(
+        self, tmp_path, monkeypatch
+    ):
+        data_file = tmp_path / "data.csv"
+        data_file.write_text("X,Y\n1,A\n2,B\n", encoding="utf-8")
+        output_dir = tmp_path / "existing"
+        output_dir.mkdir()
+        (output_dir / "old.txt").write_text("old output", encoding="utf-8")
+        txn = OutputTransaction(data_file, output_dir, policy="replace")
+        staging = txn.prepare()
+        _write_valid_staging(staging)
+        cleanup_error = OSError("backup cleanup blocked")
+        real_rmtree = __import__("viclassify_cli").shutil.rmtree
+
+        def fail_backup_cleanup(path, *args, **kwargs):
+            if Path(path) == txn.backup_path:
+                raise cleanup_error
+            return real_rmtree(path, *args, **kwargs)
+
+        monkeypatch.setattr("viclassify_cli.shutil.rmtree", fail_backup_cleanup)
+        with pytest.raises(
+            RuntimeError, match="remove the transaction backup"
+        ) as caught:
+            txn.commit(_valid_generated_files())
+
+        assert caught.value.__cause__ is cleanup_error
+        assert (output_dir / "old.txt").read_text(encoding="utf-8") == "old output"
+        assert not txn.backup_path.exists()
+        assert not staging.exists()
         assert not txn.prepared
         assert not txn.committed
 
