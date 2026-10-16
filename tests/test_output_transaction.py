@@ -107,6 +107,78 @@ def test_path_registers_safe_nested_path_without_creating_it(tmp_path):
         analysis.transaction.rollback()
 
 
+@pytest.mark.parametrize(
+    "manifest_text, message",
+    [
+        (".\n", "root-like"),
+        ("../outside.txt\n", "parent traversal"),
+        ("nested/../../outside.txt\n", "parent traversal"),
+        ("/absolute/file.txt\n", "absolute"),
+        ("nested\\artifact.txt\n", "non-normalized"),
+        ("generated_files.txt\n\nrun_status.json\nrun_metadata.json\n", "blank lines"),
+        (
+            "generated_files.txt\n \t\nrun_status.json\nrun_metadata.json\n",
+            "blank lines",
+        ),
+    ],
+)
+def test_manifest_rejects_malformed_artifact_names(tmp_path, manifest_text, message):
+    data_file = tmp_path / "data.csv"
+    data_file.write_text("X,Y\n1,A\n2,B\n", encoding="utf-8")
+    txn = OutputTransaction(data_file, tmp_path / "output")
+    staging = txn.prepare()
+    (staging / "run_metadata.json").write_text("{}", encoding="utf-8")
+    (staging / "run_status.json").write_text("{}", encoding="utf-8")
+    (staging / "generated_files.txt").write_text(manifest_text, encoding="utf-8")
+    try:
+        with pytest.raises(RuntimeError, match=message):
+            txn.validate_staged_output(set())
+    finally:
+        txn.rollback()
+
+
+@pytest.mark.parametrize(
+    "registry_entry",
+    [".", "../outside.txt", "C:\\outside.txt", "nested\\artifact.txt"],
+)
+def test_registry_rejects_unsafe_artifact_names(tmp_path, registry_entry):
+    data_file = tmp_path / "data.csv"
+    data_file.write_text("X,Y\n1,A\n2,B\n", encoding="utf-8")
+    txn = OutputTransaction(data_file, tmp_path / "output")
+    staging = txn.prepare()
+    (staging / "run_metadata.json").write_text("{}", encoding="utf-8")
+    (staging / "run_status.json").write_text("{}", encoding="utf-8")
+    (staging / "generated_files.txt").write_text(
+        "generated_files.txt\nrun_status.json\nrun_metadata.json\n", encoding="utf-8"
+    )
+    try:
+        with pytest.raises(RuntimeError, match="Generated-file registry"):
+            txn.validate_staged_output({registry_entry})
+    finally:
+        txn.rollback()
+
+
+def test_registry_safety_precedes_manifest_set_mismatch(tmp_path):
+    data_file = tmp_path / "data.csv"
+    data_file.write_text("X,Y\n1,A\n2,B\n", encoding="utf-8")
+    txn = OutputTransaction(data_file, tmp_path / "output")
+    staging = txn.prepare()
+    (staging / "run_metadata.json").write_text("{}", encoding="utf-8")
+    (staging / "run_status.json").write_text("{}", encoding="utf-8")
+    (staging / "generated_files.txt").write_text(
+        "generated_files.txt\nrun_status.json\nrun_metadata.json\n", encoding="utf-8"
+    )
+    try:
+        with pytest.raises(
+            RuntimeError, match="Generated-file registry.*parent traversal"
+        ):
+            txn.validate_staged_output(
+                {"../outside.txt", "run_status.json", "generated_files.txt"}
+            )
+    finally:
+        txn.rollback()
+
+
 def test_run_rolls_back_when_running_status_fails(tmp_path, monkeypatch):
     analysis = _analysis(tmp_path)
     sentinel = RuntimeError("running status failed")

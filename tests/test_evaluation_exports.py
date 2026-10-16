@@ -60,6 +60,20 @@ class TestCombinedHoldoutMetrics:
             out_dir = analysis.working_output_dir
             # Read combined metrics
             combined = pd.read_csv(out_dir / "chronological_holdout_metrics.csv")
+            assert "log_loss_status" not in combined.columns
+            assert "log_loss_error" not in combined.columns
+            assert {
+                "model",
+                "accuracy",
+                "balanced_accuracy",
+                "macro_precision",
+                "macro_recall",
+                "macro_f1",
+                "weighted_f1",
+                "mcc",
+                "log_loss",
+            }.issubset(combined.columns)
+            assert np.isfinite(combined["log_loss"].to_numpy()).all()
 
             for _, row in combined.iterrows():
                 model_name = row["model"]

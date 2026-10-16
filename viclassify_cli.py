@@ -13,7 +13,7 @@ import uuid
 import warnings
 from copy import deepcopy
 from dataclasses import asdict, dataclass
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, ClassVar
 
 import joblib
@@ -53,6 +53,32 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
 __version__ = "0.4.0"
+
+
+def validate_relative_artifact_name(name: object, *, source: str) -> str:
+    """Validate one normalized POSIX-style artifact path."""
+    if not isinstance(name, str) or not name.strip():
+        raise RuntimeError(f"{source} contains an empty artifact path.")
+
+    relative_path = Path(name)
+    windows_path = PureWindowsPath(name)
+    if relative_path == Path(".") or name == ".":
+        raise RuntimeError(f"{source} contains a root-like artifact path: {name!r}")
+    if relative_path.is_absolute() or windows_path.is_absolute() or windows_path.drive:
+        raise RuntimeError(f"{source} contains an absolute artifact path: {name!r}")
+    if ".." in relative_path.parts or ".." in windows_path.parts:
+        raise RuntimeError(f"{source} contains parent traversal: {name!r}")
+
+    normalized_name = relative_path.as_posix()
+    if normalized_name != name:
+        raise RuntimeError(
+            f"{source} contains a non-normalized artifact path: {name!r}"
+        )
+    if any(part.startswith((".staging-", ".backup-")) for part in relative_path.parts):
+        raise RuntimeError(
+            f"{source} contains a reserved staging or backup path: {name!r}"
+        )
+    return normalized_name
 
 
 def align_probabilities_for_log_loss(
@@ -284,36 +310,32 @@ class OutputTransaction:
         except Exception as exc:
             raise RuntimeError(f"Staged run_metadata.json is malformed: {exc}") from exc
 
-        manifest_lines = [
-            line.strip()
-            for line in manifest_file.read_text(encoding="utf-8").splitlines()
-            if line.strip()
+        raw_lines = manifest_file.read_text(encoding="utf-8").splitlines()
+        blank_line_numbers = [
+            index for index, line in enumerate(raw_lines, start=1) if not line.strip()
         ]
+        if blank_line_numbers:
+            raise RuntimeError(
+                "Generated-file manifest contains blank lines at line numbers: "
+                f"{blank_line_numbers}"
+            )
 
+        manifest_lines = [
+            validate_relative_artifact_name(line, source="Generated-file manifest")
+            for line in raw_lines
+        ]
         manifest_entries = set(manifest_lines)
         if len(manifest_lines) != len(manifest_entries):
             raise RuntimeError(
                 "Generated-file manifest 'generated_files.txt' contains duplicate entries."
             )
 
-        for entry in manifest_entries:
-            rel_path = Path(entry)
-            if (
-                rel_path.is_absolute()
-                or ".." in rel_path.parts
-                or rel_path.as_posix() != entry
-            ):
-                raise RuntimeError(
-                    f"Manifest path is unsafe or not normalized: '{entry}'"
-                )
-            if any(
-                part.startswith((".staging-", ".backup-")) for part in rel_path.parts
-            ):
-                raise RuntimeError(
-                    f"Manifest contains transient staging or backup path: '{entry}'"
-                )
+        registry_entries = {
+            validate_relative_artifact_name(entry, source="Generated-file registry")
+            for entry in generated_files
+        }
 
-        expected_entries = set(generated_files) | {
+        expected_entries = registry_entries | {
             "generated_files.txt",
             "run_status.json",
         }
@@ -328,7 +350,10 @@ class OutputTransaction:
             )
 
         actual_files = {
-            path.relative_to(self.staging_path).as_posix()
+            validate_relative_artifact_name(
+                path.relative_to(self.staging_path).as_posix(),
+                source="Physical staged files",
+            )
             for path in self.staging_path.rglob("*")
             if path.is_file()
         }
@@ -343,15 +368,6 @@ class OutputTransaction:
             )
 
         for rel_file in sorted(manifest_entries):
-            rel_path = Path(rel_file)
-            if rel_path.is_absolute() or ".." in rel_path.parts:
-                raise RuntimeError(f"Manifest path is unsafe or absolute: '{rel_file}'")
-
-            if "staging-" in rel_file or "backup-" in rel_file:
-                raise RuntimeError(
-                    f"Manifest contains transient staging reference: '{rel_file}'"
-                )
-
             file_path = self.staging_path / rel_file
             try:
                 resolved_file = file_path.resolve()
@@ -693,8 +709,6 @@ class ClassificationAnalysis:
                     labels=log_loss_class_order,
                 )
             )
-            metrics["log_loss_status"] = "calculated"
-            metrics["log_loss_error"] = ""
         except Exception as exc:
             proba_arr = np.asarray(probabilities)
             shape_str = (
@@ -850,16 +864,20 @@ class ClassificationAnalysis:
                 "Call prepare_output() or run() before writing artifacts."
             )
 
-        if not isinstance(name, str) or not name.strip():
-            raise ValueError("Generated output path must be a non-empty relative path.")
+        try:
+            normalized_name = validate_relative_artifact_name(
+                name, source="Generated output path"
+            )
+        except RuntimeError as exc:
+            if not isinstance(name, str) or not name.strip():
+                message = "Generated output path must be a non-empty relative path."
+            elif "absolute artifact path" in str(exc):
+                message = f"Generated output path must be relative: {name!r}"
+            else:
+                message = f"Generated output path is unsafe: {name!r}"
+            raise ValueError(message) from exc
 
-        relative_path = Path(name)
-        if relative_path.is_absolute():
-            raise ValueError(f"Generated output path must be relative: {name!r}")
-
-        normalized_path = Path(relative_path.as_posix())
-        if normalized_path == Path(".") or ".." in normalized_path.parts:
-            raise ValueError(f"Generated output path is unsafe: {name!r}")
+        normalized_path = Path(normalized_name)
 
         staging_root = self.working_output_dir.resolve()
         output_path = self.working_output_dir / normalized_path

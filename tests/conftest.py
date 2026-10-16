@@ -359,6 +359,15 @@ def compute_expected_metrics(
         if len(set(probability_class_order)) != len(probability_class_order):
             raise ValueError("probability_class_order contains duplicate labels")
 
+        observed_labels = set(np.unique(y_true))
+        available_labels = set(probability_class_order)
+        missing_labels = observed_labels - available_labels
+        if missing_labels:
+            raise ValueError(
+                "Observed y_true labels are missing from probability_class_order: "
+                f"{sorted(missing_labels, key=str)}"
+            )
+
         source_index = {
             label: index for index, label in enumerate(probability_class_order)
         }

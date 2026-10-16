@@ -420,6 +420,16 @@ class TestLogLossProbabilityOrder:
                 np.array([[0.8, 0.2], [0.2, 0.8]]),
             )
 
+    def test_expected_metrics_rejects_missing_observed_probability_label(self):
+        with pytest.raises(ValueError, match="Observed y_true labels.*missing"):
+            compute_expected_metrics(
+                np.array(["O", "B"]),
+                np.array(["O", "B"]),
+                np.array([[0.9, 0.1], [0.2, 0.8]]),
+                classes=["O", "B"],
+                probability_class_order=["O", "G"],
+            )
+
     @pytest.mark.parametrize(
         "probabilities, probability_class_order, message",
         [
