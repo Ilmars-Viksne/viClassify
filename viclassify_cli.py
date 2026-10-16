@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import hashlib
+import itertools
 import json
 import os
 import platform
@@ -26,7 +27,9 @@ import numpy as np
 import pandas as pd
 import scipy
 import sklearn
+from scipy.stats import norm
 from sklearn.base import clone
+from sklearn.calibration import CalibratedClassifierCV
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import (
     ExtraTreesClassifier,
@@ -48,11 +51,15 @@ from sklearn.metrics import (
     precision_score,
     recall_score,
 )
-from sklearn.model_selection import GridSearchCV, StratifiedKFold
+from sklearn.model_selection import GridSearchCV, StratifiedKFold, TimeSeriesSplit
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
 __version__ = "0.4.0"
+
+SUPPORTED_CV_STRATEGIES = frozenset({"expanding-window", "stratified-shuffled"})
+SUPPORTED_DUPLICATE_POLICIES = frozenset({"keep", "warn", "fail", "drop-identical"})
+SUPPORTED_CALIBRATION_METHODS = frozenset({"none", "sigmoid", "isotonic"})
 
 
 def validate_relative_artifact_name(name: object, *, source: str) -> str:
@@ -102,6 +109,63 @@ def _add_exception_note(exc: BaseException, note: str) -> None:
         notes = []
         exc._viclassify_notes = notes
     notes.append(note)
+
+
+def wilson_interval(
+    successes: int,
+    trials: int,
+    confidence_level: float = 0.95,
+) -> tuple[float, float]:
+    """Return a two-sided Wilson score interval; zero trials are not estimable."""
+    if trials < 0 or successes < 0 or successes > trials:
+        raise ValueError("Wilson interval requires 0 <= successes <= trials")
+    if not 0 < confidence_level < 1:
+        raise ValueError("confidence_level must be between 0 and 1")
+    if trials == 0:
+        return float("nan"), float("nan")
+    z = float(norm.ppf(0.5 + confidence_level / 2))
+    proportion = successes / trials
+    denominator = 1 + z * z / trials
+    center = (proportion + z * z / (2 * trials)) / denominator
+    half_width = (
+        z
+        * np.sqrt(proportion * (1 - proportion) / trials + z * z / (4 * trials**2))
+        / denominator
+    )
+    return max(0.0, center - half_width), min(1.0, center + half_width)
+
+
+def moving_block_bootstrap_indices(
+    sample_count: int,
+    block_size: int,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Sample contiguous blocks with replacement and truncate to sample_count."""
+    if sample_count < 1 or block_size < 1 or block_size > sample_count:
+        raise ValueError("Require 1 <= block_size <= sample_count")
+    block_count = int(np.ceil(sample_count / block_size))
+    starts = rng.integers(0, sample_count - block_size + 1, size=block_count)
+    return np.concatenate([np.arange(start, start + block_size) for start in starts])[
+        :sample_count
+    ]
+
+
+def calculate_multiclass_brier_score(
+    y_true: Any,
+    probabilities: Any,
+    classes: list[str],
+) -> float:
+    """Return mean per-row sum of squared one-hot probability errors (not divided by K)."""
+    probability_array = np.asarray(probabilities, dtype=float)
+    if probability_array.ndim != 2 or probability_array.shape != (
+        len(y_true),
+        len(classes),
+    ):
+        raise ValueError("Probability shape does not match y_true and classes")
+    one_hot = np.column_stack([np.asarray(y_true) == label for label in classes])
+    return float(
+        np.mean(np.sum((probability_array - one_hot.astype(float)) ** 2, axis=1))
+    )
 
 
 def align_probabilities_for_log_loss(
@@ -198,6 +262,23 @@ class Config:
     near_constant_threshold: float = 0.99
     selection_metric: str = "macro_f1"
     output_policy: str = "fail"
+    cv_strategy: str = "expanding-window"
+    cv_gap: int = 0
+    cv_test_size: int | None = None
+    cv_max_train_size: int | None = None
+    cv_min_class_count: int = 2
+    nested_cv: bool = False
+    outer_cv_folds: int = 3
+    nested_cv_fit_warning_threshold: int = 1000
+    duplicate_policy: str = "warn"
+    calibration_method: str = "none"
+    calibration_cv_folds: int = 3
+    isotonic_min_class_support: int = 100
+    holdout_low_support_threshold: int = 20
+    holdout_very_low_support_threshold: int = 5
+    holdout_bootstrap_repeats: int = 0
+    holdout_bootstrap_block_size: int | None = None
+    confidence_level: float = 0.95
 
 
 class OutputTransaction:
@@ -596,10 +677,26 @@ class ClassificationAnalysis:
         self.best_params: dict[str, dict[str, Any]] = {}
 
         self.evaluation_models: dict[str, Pipeline] = {}
+        self.prediction_models: dict[str, Any] = {}
         self.production_models: dict[str, Pipeline] = {}
+        self.production_prediction_models: dict[str, Any] = {}
 
         self.search_summaries: list[dict[str, Any]] = []
         self.holdout_rows: list[dict[str, Any]] = []
+        self.cv_splits: list[tuple[np.ndarray, np.ndarray]] = []
+        self.cv_split_summaries: list[dict[str, Any]] = []
+        self.original_row_positions: np.ndarray = np.array([], dtype=int)
+        self.duplicate_audit = pd.DataFrame()
+        self.duplicate_groups: list[dict[str, Any]] = []
+        self.holdout_support = pd.DataFrame()
+        self.recall_interval_rows: list[dict[str, Any]] = []
+        self.metric_interval_rows: list[dict[str, Any]] = []
+        self.holdout_prediction_cache: dict[
+            str, tuple[np.ndarray, np.ndarray, list[str]]
+        ] = {}
+        self.nested_cv_estimated_fits: int | None = None
+        self.duplicate_rows_before = 0
+        self.duplicate_rows_after = 0
 
         self.train_indices: np.ndarray | None = None
         self.test_indices: np.ndarray | None = None
@@ -865,6 +962,13 @@ class ClassificationAnalysis:
             len(ranked) + 1,
             dtype=int,
         )
+        ranked["selection_rank"] = ranked["cv_selection_rank"]
+        ranked["selection_metric"] = self.cfg.selection_metric
+        ranked["selection_score_mean"] = ranked[self.selection_mean_column]
+        ranked["selection_score_std"] = ranked[self.selection_std_column]
+        ranked["cv_strategy"] = self.cfg.cv_strategy
+        ranked["independent_generalization_estimate"] = False
+        ranked["selection_score_role"] = "internal_model_selection"
 
         return ranked
 
@@ -1102,6 +1206,8 @@ class ClassificationAnalysis:
         else:
             self.classes = observed
 
+        self.original_row_positions = np.arange(len(df), dtype=int)
+        self._audit_and_apply_duplicate_policy(df)
         self.df = df
 
         print(
@@ -1109,6 +1215,296 @@ class ClassificationAnalysis:
             f"predictors: {len(self.cfg.features)}; "
             f"classes: {self.classes}"
         )
+
+    def _audit_and_apply_duplicate_policy(self, df: pd.DataFrame) -> None:
+        """Audit selected-feature duplicates, then apply the configured policy."""
+        if self.cfg.duplicate_policy not in SUPPORTED_DUPLICATE_POLICIES:
+            raise ValueError(
+                f"Unsupported duplicate policy: {self.cfg.duplicate_policy!r}"
+            )
+
+        self.duplicate_rows_before = len(df)
+        feature_groups = df.groupby(
+            list(self.cfg.features), dropna=False, sort=False
+        ).indices
+        audit_rows: list[dict[str, Any]] = []
+        groups: list[dict[str, Any]] = []
+        drop_positions: set[int] = set()
+
+        for members_raw in feature_groups.values():
+            members = sorted(int(position) for position in members_raw)
+            if len(members) < 2:
+                continue
+            canonical = members[0]
+            targets = df.iloc[members][self.cfg.target]
+            conflicting = targets.nunique(dropna=False) > 1
+            duplicate_type = (
+                "feature_duplicate_conflicting_target"
+                if conflicting
+                else "full_row_duplicate"
+            )
+            group_id = f"DUP{len(groups) + 1:05d}"
+            groups.append(
+                {
+                    "duplicate_group_id": group_id,
+                    "duplicate_type": duplicate_type,
+                    "members": members,
+                    "canonical": canonical,
+                }
+            )
+            for position in members[1:]:
+                action = "retained"
+                if not conflicting and self.cfg.duplicate_policy == "drop-identical":
+                    action = "dropped_identical"
+                    drop_positions.add(position)
+                elif conflicting and self.cfg.duplicate_policy == "drop-identical":
+                    action = "retained_conflicting_target"
+                audit_rows.append(
+                    {
+                        "duplicate_group_id": group_id,
+                        "duplicate_type": duplicate_type,
+                        "original_row_position": position,
+                        "original_index": df.index[position],
+                        "canonical_row_position": canonical,
+                        "target_value": df.iloc[position][self.cfg.target],
+                        "chronological_distance_from_canonical": position - canonical,
+                        "action": action,
+                    }
+                )
+
+        full_groups = sum(
+            group["duplicate_type"] == "full_row_duplicate" for group in groups
+        )
+        conflicting_groups = sum(
+            group["duplicate_type"] == "feature_duplicate_conflicting_target"
+            for group in groups
+        )
+        if self.cfg.duplicate_policy == "fail" and groups:
+            raise ValueError(
+                "Duplicate policy 'fail' found "
+                f"{full_groups} full-row duplicate groups and "
+                f"{conflicting_groups} feature-conflicting groups."
+            )
+        if self.cfg.duplicate_policy == "warn" and groups:
+            warnings.warn(
+                "Duplicate audit found "
+                f"{full_groups} full-row duplicate groups and "
+                f"{conflicting_groups} feature-conflicting groups; rows were retained.",
+                stacklevel=2,
+            )
+        if self.cfg.duplicate_policy == "drop-identical" and conflicting_groups:
+            warnings.warn(
+                "drop-identical retained feature-duplicate groups with conflicting targets.",
+                stacklevel=2,
+            )
+
+        self.duplicate_groups = groups
+        self.duplicate_audit = pd.DataFrame(
+            audit_rows,
+            columns=[
+                "duplicate_group_id",
+                "duplicate_type",
+                "original_row_position",
+                "original_index",
+                "canonical_row_position",
+                "target_value",
+                "chronological_distance_from_canonical",
+                "action",
+            ],
+        )
+        self.duplicate_audit.to_csv(self.path("duplicate_row_audit.csv"), index=False)
+
+        if drop_positions:
+            keep_mask = np.ones(len(df), dtype=bool)
+            keep_mask[list(drop_positions)] = False
+            df.drop(index=df.index[list(drop_positions)], inplace=True)
+            df.reset_index(drop=True, inplace=True)
+            self.original_row_positions = np.flatnonzero(keep_mask)
+            df["Sequence"] = np.arange(1, len(df) + 1)
+        self.duplicate_rows_after = len(df)
+
+    def export_duplicate_cv_overlap(self) -> None:
+        """Report duplicate groups split across train and validation folds."""
+        rows: list[dict[str, Any]] = []
+        if self.train_indices is None:
+            return
+        for fold_number, (train, validation) in enumerate(self.cv_splits, start=1):
+            train_original = set(self.original_row_positions[self.train_indices[train]])
+            validation_original = set(
+                self.original_row_positions[self.train_indices[validation]]
+            )
+            for group in self.duplicate_groups:
+                members = set(group["members"])
+                train_count = len(members & train_original)
+                validation_count = len(members & validation_original)
+                if self.cfg.cv_strategy == "expanding-window":
+                    canonical = int(group["canonical"])
+                    overlap = canonical in train_original and bool(
+                        members & validation_original
+                    )
+                else:
+                    validation_folds = sum(
+                        bool(
+                            members
+                            & set(self.original_row_positions[self.train_indices[val]])
+                        )
+                        for _, val in self.cv_splits
+                    )
+                    overlap = validation_folds > 1
+                if overlap:
+                    rows.append(
+                        {
+                            "cv_strategy": self.cfg.cv_strategy,
+                            "fold": fold_number,
+                            "duplicate_group_id": group["duplicate_group_id"],
+                            "train_member_count": train_count,
+                            "validation_member_count": validation_count,
+                            "cross_fold_duplicate": True,
+                        }
+                    )
+        pd.DataFrame(
+            rows,
+            columns=[
+                "cv_strategy",
+                "fold",
+                "duplicate_group_id",
+                "train_member_count",
+                "validation_member_count",
+                "cross_fold_duplicate",
+            ],
+        ).to_csv(self.path("duplicate_cv_overlap.csv"), index=False)
+
+    def run_nested_cv(self, y_train: pd.Series) -> None:
+        """Estimate family performance on outer temporal folds, without holdout use."""
+        if not self.cfg.nested_cv:
+            return
+        if self.cfg.cv_strategy != "expanding-window":
+            raise ValueError("Nested CV requires cv_strategy='expanding-window'.")
+        outer_splits = self.validated_cv_splits(
+            y_train, folds=self.cfg.outer_cv_folds, strategy="expanding-window"
+        )
+        total_candidates = sum(
+            int(np.prod([len(values) for values in grid.values()]))
+            for grid in self.grids.values()
+        )
+        self.nested_cv_estimated_fits = (
+            len(outer_splits) * self.cfg.cv_folds * total_candidates
+        )
+        if self.nested_cv_estimated_fits > self.cfg.nested_cv_fit_warning_threshold:
+            warnings.warn(
+                "Nested CV may require approximately "
+                f"{self.nested_cv_estimated_fits} candidate fits, exceeding the "
+                f"configured warning threshold {self.cfg.nested_cv_fit_warning_threshold}.",
+                stacklevel=2,
+            )
+
+        X_train, _, _, _ = self.split_data()
+        result_rows: list[dict[str, Any]] = []
+        summary_rows: list[dict[str, Any]] = []
+        split_rows: list[dict[str, Any]] = []
+        metric_names = (
+            "accuracy",
+            "macro_precision",
+            "macro_recall",
+            "macro_f1",
+            "balanced_accuracy",
+            "mcc",
+            "log_loss",
+        )
+        for outer_number, (outer_train, outer_validation) in enumerate(
+            outer_splits, start=1
+        ):
+            inner_y = y_train.iloc[outer_train]
+            inner_splits = self.validated_cv_splits(
+                inner_y, folds=self.cfg.cv_folds, strategy="expanding-window"
+            )
+            for role, positions in (
+                ("train", outer_train),
+                ("validation", outer_validation),
+            ):
+                for position in positions:
+                    absolute = int(self.train_indices[position])
+                    split_rows.append(
+                        {
+                            "row_position": int(self.original_row_positions[absolute]),
+                            "original_index": self.data.index[absolute],
+                            "role": role,
+                            "outer_fold": outer_number,
+                            "cv_strategy": "expanding-window",
+                        }
+                    )
+            for name, pipeline in self.models.items():
+                search = GridSearchCV(
+                    estimator=pipeline,
+                    param_grid=self.grids[name],
+                    scoring=self.SCORING,
+                    refit=self.cfg.selection_metric,
+                    cv=inner_splits,
+                    n_jobs=self.cfg.n_jobs,
+                    error_score="raise",
+                )
+                search.fit(X_train.iloc[outer_train], inner_y)
+                estimator = search.best_estimator_
+                predicted = estimator.predict(X_train.iloc[outer_validation])
+                probabilities = estimator.predict_proba(X_train.iloc[outer_validation])
+                estimator_classes = list(estimator.named_steps["classifier"].classes_)
+                metrics = self.calculate_holdout_metrics(
+                    y_true=y_train.iloc[outer_validation],
+                    y_pred=predicted,
+                    probabilities=probabilities,
+                    reporting_classes=self.classes,
+                    estimator_classes=estimator_classes,
+                    model_name=name,
+                    evaluation_partition=f"nested_outer_fold_{outer_number}",
+                )
+                result = {
+                    "outer_fold": outer_number,
+                    "model_family": name,
+                    "selected_parameters": json.dumps(
+                        search.best_params_, sort_keys=True
+                    ),
+                    "selection_metric": self.cfg.selection_metric,
+                    "train_row_count": len(outer_train),
+                    "validation_row_count": len(outer_validation),
+                    "nested_evaluation_role": "nested training-partition evaluation",
+                    "final_holdout_used": False,
+                }
+                for metric in metric_names:
+                    result[f"outer_{metric}"] = metrics[metric]
+                result_rows.append(result)
+
+        results = pd.DataFrame(result_rows)
+        for name in self.models:
+            subset = results.loc[results["model_family"] == name]
+            for metric in metric_names:
+                values = subset[f"outer_{metric}"].astype(float)
+                summary_rows.append(
+                    {
+                        "model_family": name,
+                        "metric": metric,
+                        "mean": values.mean(),
+                        "std": values.std(ddof=1),
+                        "minimum": values.min(),
+                        "maximum": values.max(),
+                        "outer_fold_count": len(values),
+                        "evaluation_role": "nested training-partition evaluation",
+                        "final_holdout_used": False,
+                    }
+                )
+        results.to_csv(self.path("nested_cv_fold_results.csv"), index=False)
+        pd.DataFrame(summary_rows).to_csv(
+            self.path("nested_cv_summary.csv"), index=False
+        )
+        pd.DataFrame(
+            split_rows,
+            columns=[
+                "row_position",
+                "original_index",
+                "role",
+                "outer_fold",
+                "cv_strategy",
+            ],
+        ).to_csv(self.path("nested_cv_split_assignments.csv"), index=False)
 
     def audit_and_describe(self) -> None:
         self.heading("2. Data audit and descriptive statistics")
@@ -1482,9 +1878,65 @@ class ClassificationAnalysis:
                 "and permutation importance may be unstable.",
                 stacklevel=2,
             )
+        if (
+            self.cfg.holdout_bootstrap_repeats > 0
+            and self.cfg.holdout_bootstrap_block_size is not None
+            and self.cfg.holdout_bootstrap_block_size > len(y_test)
+        ):
+            raise ValueError(
+                "holdout-bootstrap-block-size cannot exceed the chronological holdout size"
+            )
 
         train_counts = y_train.value_counts().reindex(self.classes, fill_value=0)
         test_counts = y_test.value_counts().reindex(self.classes, fill_value=0)
+
+        support_rows: list[dict[str, Any]] = []
+        low_support_labels: list[str] = []
+        for label in self.classes:
+            train_support = int(train_counts[label])
+            holdout_support = int(test_counts[label])
+            if holdout_support == 0:
+                status = "absent"
+                low_support_labels.append(label)
+            elif holdout_support < self.cfg.holdout_very_low_support_threshold:
+                status = "very_low"
+                low_support_labels.append(label)
+            elif holdout_support < self.cfg.holdout_low_support_threshold:
+                status = "low"
+                low_support_labels.append(label)
+            else:
+                status = "adequate"
+            support_rows.append(
+                {
+                    "class_label": label,
+                    "training_support": train_support,
+                    "holdout_support": holdout_support,
+                    "total_support": train_support + holdout_support,
+                    "training_fraction": train_support / len(y_train),
+                    "holdout_fraction": holdout_support / len(y_test),
+                    "support_status": status,
+                }
+            )
+        self.holdout_support = pd.DataFrame(support_rows)
+        self.holdout_support.to_csv(self.path("holdout_class_support.csv"), index=False)
+        if low_support_labels:
+            details = []
+            for row in support_rows:
+                if row["support_status"] == "absent":
+                    details.append(
+                        f"{row['class_label']!r}: absent (class-specific holdout performance is not estimable)"
+                    )
+                elif row["support_status"] == "very_low":
+                    details.append(
+                        f"{row['class_label']!r}: support {row['holdout_support']} (estimates extremely unstable)"
+                    )
+                elif row["support_status"] == "low":
+                    details.append(
+                        f"{row['class_label']!r}: support {row['holdout_support']} (estimates unstable)"
+                    )
+            warnings.warn(
+                "Low holdout class support: " + "; ".join(details), stacklevel=2
+            )
 
         split_df = pd.DataFrame(
             {
@@ -1805,39 +2257,258 @@ class ClassificationAnalysis:
             self.grids = deepcopy(grid_overrides)
             self.grid_overrides = deepcopy(grid_overrides)
 
-    def cv(self, y: pd.Series) -> StratifiedKFold:
-        minimum_class_count = int(y.value_counts().min())
-
-        folds = min(
-            self.cfg.cv_folds,
-            minimum_class_count,
+    def cv(self, y: pd.Series, *, folds: int | None = None) -> Any:
+        """Build the configured splitter without reducing requested folds."""
+        n_splits = self.cfg.cv_folds if folds is None else folds
+        if self.cfg.cv_strategy == "stratified-shuffled":
+            return StratifiedKFold(
+                n_splits=n_splits,
+                shuffle=True,
+                random_state=self.cfg.random_state,
+            )
+        return TimeSeriesSplit(
+            n_splits=n_splits,
+            gap=self.cfg.cv_gap,
+            test_size=self.cfg.cv_test_size,
+            max_train_size=self.cfg.cv_max_train_size,
         )
 
-        if folds < 2:
+    def validated_cv_splits(
+        self,
+        y: pd.Series,
+        *,
+        folds: int | None = None,
+        strategy: str | None = None,
+        min_class_count: int | None = None,
+    ) -> list[tuple[np.ndarray, np.ndarray]]:
+        """Build CV folds and validate chronology and classifier support."""
+        selected_strategy = strategy or self.cfg.cv_strategy
+        if selected_strategy not in SUPPORTED_CV_STRATEGIES:
+            raise ValueError(f"Unsupported CV strategy: {selected_strategy!r}")
+        splitter = self.cv(y, folds=folds)
+        if selected_strategy != self.cfg.cv_strategy:
+            if selected_strategy == "stratified-shuffled":
+                splitter = StratifiedKFold(
+                    n_splits=folds or self.cfg.cv_folds,
+                    shuffle=True,
+                    random_state=self.cfg.random_state,
+                )
+            else:
+                splitter = TimeSeriesSplit(
+                    n_splits=folds or self.cfg.cv_folds,
+                    gap=self.cfg.cv_gap,
+                    test_size=self.cfg.cv_test_size,
+                    max_train_size=self.cfg.cv_max_train_size,
+                )
+
+        minimum = (
+            self.cfg.cv_min_class_count if min_class_count is None else min_class_count
+        )
+        try:
+            splits = [
+                (np.asarray(train, dtype=int), np.asarray(validation, dtype=int))
+                for train, validation in splitter.split(np.zeros(len(y)), y)
+            ]
+        except ValueError as exc:
             raise ValueError(
-                "The rarest chronological-training class "
-                "needs at least two observations"
-            )
+                f"Unable to construct {selected_strategy} CV folds: {exc}"
+            ) from exc
+        if len(splits) != (folds or self.cfg.cv_folds):
+            raise ValueError("CV splitter returned an unexpected number of folds")
 
-        if folds < self.cfg.cv_folds:
-            warnings.warn(
-                f"Reducing CV folds from {self.cfg.cv_folds} "
-                f"to {folds}, based on the rarest class "
-                "in the chronological training partition.",
-                stacklevel=2,
-            )
+        all_classes = list(pd.unique(y))
+        for fold_index, (train, validation) in enumerate(splits, start=1):
+            if not len(train) or not len(validation):
+                raise ValueError(f"CV fold {fold_index} has an empty partition")
+            if (
+                np.any(train < 0)
+                or np.any(validation < 0)
+                or np.any(train >= len(y))
+                or np.any(validation >= len(y))
+            ):
+                raise ValueError(
+                    f"CV fold {fold_index} is outside the training partition"
+                )
+            if np.intersect1d(train, validation).size:
+                raise ValueError(
+                    f"CV fold {fold_index} has overlapping train and validation rows"
+                )
+            if selected_strategy == "expanding-window":
+                if int(train.max()) >= int(validation.min()):
+                    raise ValueError(
+                        f"Expanding-window CV fold {fold_index} trains on a row at or after validation."
+                    )
+                gap_size = int(validation.min() - train.max() - 1)
+                if gap_size < self.cfg.cv_gap:
+                    raise ValueError(
+                        f"Expanding-window CV fold {fold_index} does not respect cv_gap={self.cfg.cv_gap}."
+                    )
+            counts = y.iloc[train].value_counts().reindex(all_classes, fill_value=0)
+            if (counts == 0).any():
+                missing = counts[counts == 0].index.tolist()
+                raise ValueError(
+                    f"{selected_strategy} CV fold {fold_index} contains only "
+                    f"{int((counts > 0).sum())} training classes; missing {missing}. "
+                    "Increase the initial training window, reduce the fold count, "
+                    "or select stratified-shuffled explicitly."
+                )
+            if int(counts.min()) < minimum:
+                low = counts[counts < minimum].to_dict()
+                raise ValueError(
+                    f"{selected_strategy} CV fold {fold_index} has training "
+                    f"class support below cv_min_class_count={minimum}: {low}."
+                )
+        return splits
 
-        return StratifiedKFold(
-            n_splits=folds,
-            shuffle=True,
-            random_state=self.cfg.random_state,
+    def calibration_splits(self, y: pd.Series) -> list[tuple[np.ndarray, np.ndarray]]:
+        """Build and validate calibration folds without using holdout rows."""
+        splits = self.validated_cv_splits(
+            y,
+            folds=self.cfg.calibration_cv_folds,
+            min_class_count=1,
         )
+        for fold_number, (_train, validation) in enumerate(splits, start=1):
+            observed = set(y.iloc[validation])
+            missing = sorted(set(self.classes) - observed)
+            if missing:
+                raise ValueError(
+                    f"{self.cfg.calibration_method.title()} calibration fold "
+                    f"{fold_number} lacks class(es) {missing}. Reduce "
+                    "calibration_cv_folds, increase the initial training window, "
+                    "or use --calibration-method none."
+                )
+        return splits
+
+    def fit_calibrated_estimator(
+        self,
+        estimator: Pipeline,
+        X: pd.DataFrame,
+        y: pd.Series,
+    ) -> Any:
+        """Fit calibration with validated training-partition folds only."""
+        method = self.cfg.calibration_method
+        if method == "none":
+            return clone(estimator).fit(X, y)
+        if method not in SUPPORTED_CALIBRATION_METHODS:
+            raise ValueError(f"Unsupported calibration method: {method!r}")
+        counts = y.value_counts().reindex(self.classes, fill_value=0)
+        if (
+            method == "isotonic"
+            and int(counts.min()) < self.cfg.isotonic_min_class_support
+        ):
+            raise ValueError(
+                "Isotonic calibration requires at least "
+                f"{self.cfg.isotonic_min_class_support} observations per class; "
+                f"observed support: {counts.to_dict()}"
+            )
+        folds = self.calibration_splits(y)
+        calibrated = CalibratedClassifierCV(
+            estimator=clone(estimator),
+            method=method,
+            cv=folds,
+            ensemble=True,
+            n_jobs=self.cfg.n_jobs,
+        )
+        return calibrated.fit(X, y)
+
+    @staticmethod
+    def _support_column(label: str, role: str) -> str:
+        safe = re.sub(r"[^A-Za-z0-9]+", "_", str(label)).strip("_") or "class"
+        return f"{role}_support_{safe}"
+
+    def export_cv_splits(
+        self,
+        splits: list[tuple[np.ndarray, np.ndarray]],
+        y_train: pd.Series,
+    ) -> None:
+        """Export auditable fold assignments and class support summaries."""
+        strategy = self.cfg.cv_strategy
+        self.cv_splits = splits
+        assignment_rows: list[dict[str, Any]] = []
+        summary_rows: list[dict[str, Any]] = []
+        train_global = self.train_indices
+        test_global = self.test_indices
+        if train_global is None or test_global is None:
+            raise RuntimeError("Chronological split indices are unavailable")
+
+        for fold_number, (train, validation) in enumerate(splits, start=1):
+            train_positions = train_global[train]
+            validation_positions = train_global[validation]
+            gap_positions = (
+                np.arange(train_positions.max() + 1, validation_positions.min())
+                if strategy == "expanding-window"
+                else np.array([], dtype=int)
+            )
+            for role, positions in (
+                ("train", train_positions),
+                ("gap", gap_positions),
+                ("validation", validation_positions),
+            ):
+                for position in positions:
+                    original_position = (
+                        int(self.original_row_positions[position])
+                        if len(self.original_row_positions)
+                        else int(position)
+                    )
+                    assignment_rows.append(
+                        {
+                            "row_position": original_position,
+                            "original_index": self.data.index[position],
+                            "role": role,
+                            "fold": fold_number,
+                            "cv_strategy": strategy,
+                        }
+                    )
+            row: dict[str, Any] = {
+                "fold": fold_number,
+                "cv_strategy": strategy,
+                "train_start_position": int(train_positions.min()),
+                "train_end_position": int(train_positions.max()),
+                "validation_start_position": int(validation_positions.min()),
+                "validation_end_position": int(validation_positions.max()),
+                "gap_size": len(gap_positions),
+                "train_row_count": len(train),
+                "validation_row_count": len(validation),
+            }
+            train_support = self.data.iloc[train_positions][
+                self.cfg.target
+            ].value_counts()
+            validation_support = self.data.iloc[validation_positions][
+                self.cfg.target
+            ].value_counts()
+            for label in self.classes:
+                row[self._support_column(label, "train")] = int(
+                    train_support.get(label, 0)
+                )
+                row[self._support_column(label, "validation")] = int(
+                    validation_support.get(label, 0)
+                )
+            summary_rows.append(row)
+
+        for position in test_global:
+            assignment_rows.append(
+                {
+                    "row_position": int(self.original_row_positions[position])
+                    if len(self.original_row_positions)
+                    else int(position),
+                    "original_index": self.data.index[position],
+                    "role": "final_holdout",
+                    "fold": pd.NA,
+                    "cv_strategy": strategy,
+                }
+            )
+        pd.DataFrame(assignment_rows).to_csv(
+            self.path("cv_split_assignments.csv"), index=False
+        )
+        pd.DataFrame(summary_rows).to_csv(self.path("cv_fold_summary.csv"), index=False)
 
     def tune_on_training_only(self) -> None:
         self.heading("7. Hyperparameter tuning on chronological training data only")
 
         X_train, _, y_train, _ = self.split_data()
-        cv = self.cv(y_train)
+        cv = self.validated_cv_splits(y_train)
+        self.export_cv_splits(cv, y_train)
+        self.export_duplicate_cv_overlap()
 
         for name, pipeline in self.models.items():
             print(f"Tuning {name} ...")
@@ -1870,6 +2541,9 @@ class ClassificationAnalysis:
             row: dict[str, Any] = {
                 "model": name,
                 "selection_metric": (self.cfg.selection_metric),
+                "cv_strategy": self.cfg.cv_strategy,
+                "selection_score_role": "internal_model_selection",
+                "independent_generalization_estimate": False,
                 "best_parameters": json.dumps(
                     search.best_params_,
                     sort_keys=True,
@@ -1899,7 +2573,7 @@ class ClassificationAnalysis:
 
             fold_rows: list[dict[str, Any]] = []
 
-            for fold_index in range(cv.n_splits):
+            for fold_index in range(len(cv)):
                 fold_row: dict[str, Any] = {
                     "model": name,
                     "fold": fold_index + 1,
@@ -1926,6 +2600,8 @@ class ClassificationAnalysis:
                 name=name,
                 best_index=best_index,
             )
+
+        self.run_nested_cv(y_train)
 
     def plot_search(
         self,
@@ -1985,7 +2661,7 @@ class ClassificationAnalysis:
         plt.xlabel(
             f"Hyperparameter configuration ordered by {metric.replace('_', ' ')} rank"
         )
-        plt.ylabel("Cross-validated score")
+        plt.ylabel("Internal training-partition CV selection score")
         plt.ylim(0, 1)
         plt.grid(alpha=0.3)
         plt.legend()
@@ -1999,20 +2675,30 @@ class ClassificationAnalysis:
         X_train, X_test, y_train, y_test = self.split_data()
 
         for name, pipeline in self.models.items():
-            model = (
+            base_model = (
                 clone(pipeline)
                 .set_params(**self.best_params[name])
                 .fit(X_train, y_train)
             )
+            self.evaluation_models[name] = base_model
+            model = (
+                base_model
+                if self.cfg.calibration_method == "none"
+                else self.fit_calibrated_estimator(
+                    clone(pipeline).set_params(**self.best_params[name]),
+                    X_train,
+                    y_train,
+                )
+            )
+            self.prediction_models[name] = model
             fitted_at_utc = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
-            self.evaluation_models[name] = model
             self.export_evaluation_model(name, model, fitted_at_utc=fitted_at_utc)
 
             pred = model.predict(X_test)
             proba = model.predict_proba(X_test)
 
-            model_classes = list(model.named_steps["classifier"].classes_)
+            model_classes = list(model.classes_)
 
             metrics = self.calculate_holdout_metrics(
                 y_true=y_test,
@@ -2026,6 +2712,35 @@ class ClassificationAnalysis:
             metrics["model"] = name
 
             self.holdout_rows.append(metrics)
+            self.holdout_prediction_cache[name] = (
+                np.asarray(pred),
+                np.asarray(proba),
+                model_classes,
+            )
+            y_test_array = np.asarray(y_test)
+            pred_array = np.asarray(pred)
+            for label in self.classes:
+                support = int(np.sum(y_test_array == label))
+                true_positives = int(
+                    np.sum((y_test_array == label) & (pred_array == label))
+                )
+                lower, upper = wilson_interval(
+                    true_positives, support, self.cfg.confidence_level
+                )
+                self.recall_interval_rows.append(
+                    {
+                        "model_family": name,
+                        "class_label": label,
+                        "support": support,
+                        "true_positives": true_positives,
+                        "recall": true_positives / support if support else np.nan,
+                        "confidence_level": self.cfg.confidence_level,
+                        "interval_method": "wilson",
+                        "recall_ci_lower": lower,
+                        "recall_ci_upper": upper,
+                        "interval_status": "estimated" if support else "not_estimable",
+                    }
+                )
 
             slug = self.slug(name)
 
@@ -2108,6 +2823,8 @@ class ClassificationAnalysis:
             self.path("chronological_holdout_metrics.csv"),
             index=False,
         )
+        self.export_holdout_intervals(y_test)
+        self.export_calibration_diagnostics(y_test)
 
         # Rank families exclusively by training-partition CV results.
         # Chronological holdout metrics are intentionally excluded.
@@ -2118,6 +2835,12 @@ class ClassificationAnalysis:
             [
                 "model",
                 "cv_selection_rank",
+                "selection_rank",
+                "selection_metric",
+                "selection_score_mean",
+                "selection_score_std",
+                "cv_strategy",
+                "independent_generalization_estimate",
             ]
         ].copy()
         ranking["cv_selected"] = ranking["cv_selection_rank"] == 1
@@ -2141,6 +2864,25 @@ class ClassificationAnalysis:
             validate="one_to_one",
         )
 
+        if not self.holdout_support.empty:
+            support_values = self.holdout_support["holdout_support"]
+            comparison["holdout_row_count"] = int(support_values.sum())
+            comparison["minimum_holdout_class_support"] = int(support_values.min())
+            comparison["low_support_class_count"] = int(
+                self.holdout_support["support_status"]
+                .isin(["low", "very_low", "absent"])
+                .sum()
+            )
+            comparison["absent_holdout_class_count"] = int(
+                (self.holdout_support["support_status"] == "absent").sum()
+            )
+            comparison["holdout_support_warning"] = bool(
+                comparison["low_support_class_count"].iloc[0]
+            )
+        comparison["balanced_accuracy_definition"] = (
+            "macro recall over reporting_class_order; absent classes receive recall 0"
+        )
+
         comparison.sort_values(
             "cv_selection_rank",
             ascending=True,
@@ -2151,15 +2893,296 @@ class ClassificationAnalysis:
 
         self.plot_model_comparison(comparison)
 
+    def export_holdout_intervals(self, y_test: pd.Series) -> None:
+        """Export per-class Wilson intervals and optional block-bootstrap intervals."""
+        pd.DataFrame(
+            self.recall_interval_rows,
+            columns=[
+                "model_family",
+                "class_label",
+                "support",
+                "true_positives",
+                "recall",
+                "confidence_level",
+                "interval_method",
+                "recall_ci_lower",
+                "recall_ci_upper",
+                "interval_status",
+            ],
+        ).to_csv(self.path("holdout_recall_intervals.csv"), index=False)
+
+        metric_names = [
+            "accuracy",
+            "balanced_accuracy",
+            "macro_precision",
+            "macro_recall",
+            "macro_f1",
+            "weighted_f1",
+            "mcc",
+            "log_loss",
+        ]
+        repeats = self.cfg.holdout_bootstrap_repeats
+        block_size = self.cfg.holdout_bootstrap_block_size
+        if repeats and block_size is None:
+            block_size = min(len(y_test), max(1, int(np.sqrt(len(y_test)))))
+        if block_size is None:
+            block_size = 1
+        method = "iid_row_bootstrap" if block_size == 1 else "moving_block_bootstrap"
+        if repeats and block_size == 1:
+            warnings.warn(
+                "Holdout bootstrap block size 1 assumes independent observations.",
+                stacklevel=2,
+            )
+
+        point_lookup = {row["model"]: row for row in self.holdout_rows}
+        for model_name, (
+            predicted,
+            probabilities,
+            estimator_classes,
+        ) in self.holdout_prediction_cache.items():
+            for metric in metric_names:
+                point = float(point_lookup[model_name][metric])
+                values: list[float] = []
+                omitted = {str(label): 0 for label in self.classes}
+                if repeats:
+                    seed_material = (
+                        f"{self.cfg.random_state}|{model_name}|{metric}".encode()
+                    )
+                    seed = int.from_bytes(
+                        hashlib.sha256(seed_material).digest()[:8], "big"
+                    )
+                    rng = np.random.default_rng(seed)
+                    for _ in range(repeats):
+                        sample_indices = moving_block_bootstrap_indices(
+                            len(y_test), block_size, rng
+                        )
+                        sampled_true = np.asarray(y_test)[sample_indices]
+                        sampled_pred = predicted[sample_indices]
+                        for label in self.classes:
+                            if not np.any(sampled_true == label):
+                                omitted[str(label)] += 1
+                        if metric == "accuracy":
+                            value = accuracy_score(sampled_true, sampled_pred)
+                        elif metric in {
+                            "balanced_accuracy",
+                            "macro_recall",
+                        }:
+                            value = recall_score(
+                                sampled_true,
+                                sampled_pred,
+                                labels=self.classes,
+                                average="macro",
+                                zero_division=0,
+                            )
+                        elif metric == "macro_precision":
+                            value = precision_score(
+                                sampled_true,
+                                sampled_pred,
+                                labels=self.classes,
+                                average="macro",
+                                zero_division=0,
+                            )
+                        elif metric == "macro_f1":
+                            value = f1_score(
+                                sampled_true,
+                                sampled_pred,
+                                labels=self.classes,
+                                average="macro",
+                                zero_division=0,
+                            )
+                        elif metric == "weighted_f1":
+                            value = f1_score(
+                                sampled_true,
+                                sampled_pred,
+                                labels=self.classes,
+                                average="weighted",
+                                zero_division=0,
+                            )
+                        elif metric == "mcc":
+                            if (
+                                len(np.unique(sampled_true)) < 2
+                                or len(np.unique(sampled_pred)) < 2
+                            ):
+                                continue
+                            value = matthews_corrcoef(sampled_true, sampled_pred)
+                        else:
+                            aligned, class_order = align_probabilities_for_log_loss(
+                                probabilities[sample_indices], estimator_classes
+                            )
+                            try:
+                                value = log_loss(
+                                    sampled_true, aligned, labels=class_order
+                                )
+                            except ValueError:
+                                continue
+                        if np.isfinite(value):
+                            values.append(float(value))
+
+                valid = len(values)
+                enough_valid = repeats > 0 and valid >= int(np.ceil(0.9 * repeats))
+                lower, upper = (
+                    np.quantile(
+                        values,
+                        [
+                            (1 - self.cfg.confidence_level) / 2,
+                            1 - (1 - self.cfg.confidence_level) / 2,
+                        ],
+                    )
+                    if enough_valid
+                    else (np.nan, np.nan)
+                )
+                self.metric_interval_rows.append(
+                    {
+                        "model_family": model_name,
+                        "metric": metric,
+                        "point_estimate": point,
+                        "confidence_level": self.cfg.confidence_level,
+                        "interval_method": method,
+                        "bootstrap_repeats_requested": repeats,
+                        "bootstrap_repeats_valid": valid,
+                        "bootstrap_block_size": block_size,
+                        "ci_lower": lower,
+                        "ci_upper": upper,
+                        "interval_status": (
+                            "disabled"
+                            if repeats == 0
+                            else "estimated"
+                            if enough_valid
+                            else "unreliable"
+                        ),
+                        "resamples_omitting_class": json.dumps(omitted, sort_keys=True),
+                    }
+                )
+        pd.DataFrame(self.metric_interval_rows).to_csv(
+            self.path("holdout_metric_intervals.csv"), index=False
+        )
+
+    def export_calibration_diagnostics(self, y_test: pd.Series) -> None:
+        """Export multiclass Brier scores, one-vs-rest bins, and reliability plots."""
+        summary_rows: list[dict[str, Any]] = []
+        bin_rows: list[dict[str, Any]] = []
+        edges = np.linspace(0.0, 1.0, 11)
+        for model_name, (
+            predicted,
+            probabilities,
+            estimator_classes,
+        ) in self.holdout_prediction_cache.items():
+            aligned, class_order = align_probabilities_for_log_loss(
+                probabilities, estimator_classes
+            )
+            brier = calculate_multiclass_brier_score(
+                y_test, probabilities, estimator_classes
+            )
+            minimum_support = (
+                int(self.holdout_support["holdout_support"].min())
+                if not self.holdout_support.empty
+                else 0
+            )
+            summary_rows.append(
+                {
+                    "model_family": model_name,
+                    "calibration_method": self.cfg.calibration_method,
+                    "log_loss": float(log_loss(y_test, aligned, labels=class_order)),
+                    "brier_score": brier,
+                    "brier_score_definition": "mean per-row sum over classes; not divided by class count",
+                    "calibration_status": (
+                        "calibrated"
+                        if self.cfg.calibration_method != "none"
+                        else "uncalibrated"
+                    ),
+                    "minimum_holdout_class_support": minimum_support,
+                }
+            )
+            plt.figure(figsize=(7, 6))
+            plt.plot(
+                [0, 1],
+                [0, 1],
+                linestyle="--",
+                color="black",
+                label="Perfect calibration",
+            )
+            for class_index, label in enumerate(estimator_classes):
+                class_probabilities = probabilities[:, class_index]
+                observed = np.asarray(y_test) == label
+                support = int(observed.sum())
+                means: list[float] = []
+                frequencies: list[float] = []
+                for bin_index, (lower, upper) in enumerate(itertools.pairwise(edges)):
+                    mask = (class_probabilities >= lower) & (
+                        class_probabilities < upper
+                        if bin_index < len(edges) - 2
+                        else class_probabilities <= upper
+                    )
+                    count = int(mask.sum())
+                    mean_probability = (
+                        float(class_probabilities[mask].mean()) if count else np.nan
+                    )
+                    observed_frequency = (
+                        float(observed[mask].mean()) if count else np.nan
+                    )
+                    if count:
+                        means.append(mean_probability)
+                        frequencies.append(observed_frequency)
+                    bin_rows.append(
+                        {
+                            "model_family": model_name,
+                            "class_label": label,
+                            "bin_index": bin_index,
+                            "bin_lower": lower,
+                            "bin_upper": upper,
+                            "sample_count": count,
+                            "mean_predicted_probability": mean_probability,
+                            "observed_frequency": observed_frequency,
+                            "absolute_calibration_gap": (
+                                abs(mean_probability - observed_frequency)
+                                if count
+                                else np.nan
+                            ),
+                        }
+                    )
+                if support:
+                    plt.plot(
+                        means, frequencies, marker="o", label=f"{label} (n={support})"
+                    )
+                else:
+                    plt.annotate(
+                        f"{label}: unavailable (n=0)",
+                        (0.04, 0.94 - 0.05 * class_index),
+                        xycoords="axes fraction",
+                    )
+            plt.xlabel("Mean predicted probability")
+            plt.ylabel("Observed frequency")
+            plt.title(f"Holdout Reliability: {model_name}")
+            plt.grid(alpha=0.3)
+            plt.legend()
+            self.savefig(f"{self.slug(model_name)}_holdout_reliability.png")
+
+        pd.DataFrame(summary_rows).to_csv(
+            self.path("holdout_calibration_summary.csv"), index=False
+        )
+        pd.DataFrame(
+            bin_rows,
+            columns=[
+                "model_family",
+                "class_label",
+                "bin_index",
+                "bin_lower",
+                "bin_upper",
+                "sample_count",
+                "mean_predicted_probability",
+                "observed_frequency",
+                "absolute_calibration_gap",
+            ],
+        ).to_csv(self.path("holdout_reliability_bins.csv"), index=False)
+
     def export_evaluation_model(
         self,
         name: str,
-        model: Pipeline,
+        model: Any,
         *,
         fitted_at_utc: str,
     ) -> None:
-        classifier = model.named_steps["classifier"]
-        estimator_classes = list(classifier.classes_)
+        estimator_classes = list(model.classes_)
 
         artifact = {
             "model": model,
@@ -2170,6 +3193,10 @@ class ClassificationAnalysis:
             "estimator_class_order": estimator_classes,
             "selection_metric": (self.cfg.selection_metric),
             "best_parameters": (self.best_params[name]),
+            "calibration_method": self.cfg.calibration_method,
+            "selection_score_role": "internal_model_selection",
+            "independent_generalization_estimate": False,
+            "duplicate_policy": self.cfg.duplicate_policy,
             "provenance": self.get_provenance_block(fitted_at_utc=fitted_at_utc),
             "model_context": {
                 "model_role": "chronological_training_evaluation_model",
@@ -2178,6 +3205,14 @@ class ClassificationAnalysis:
                 "reporting_class_order": self.classes,
                 "estimator_class_order": estimator_classes,
                 "selection_metric": self.cfg.selection_metric,
+                "calibration_method": self.cfg.calibration_method,
+                "calibration_training_partition": "chronological_training_partition",
+                "selection_score_role": "internal_model_selection",
+                "independent_generalization_estimate": False,
+                "duplicate_policy": self.cfg.duplicate_policy,
+                "balanced_accuracy_definition": (
+                    "macro recall over reporting_class_order; absent classes receive recall 0"
+                ),
                 "best_parameters": self.best_params[name],
                 "random_state": self.cfg.random_state,
                 "training_partition": "chronological_training_partition",
@@ -2405,7 +3440,9 @@ class ClassificationAnalysis:
             plot[cv_column],
             height,
             xerr=plot[cv_std_column],
-            label=(f"Training-partition tuning CV {metric.replace('_', ' ').title()}"),
+            label=(
+                f"Internal training-partition CV selection {metric.replace('_', ' ').title()}"
+            ),
             color="steelblue",
         )
 
@@ -2685,17 +3722,25 @@ class ClassificationAnalysis:
 
         for name, pipeline in self.models.items():
             production = clone(pipeline).set_params(**self.best_params[name]).fit(X, y)
+            production_prediction = (
+                production
+                if self.cfg.calibration_method == "none"
+                else self.fit_calibrated_estimator(
+                    clone(pipeline).set_params(**self.best_params[name]), X, y
+                )
+            )
             fitted_at_utc = datetime.datetime.now(datetime.timezone.utc).isoformat()
             production_fitted_timestamps[name] = fitted_at_utc
 
             self.production_models[name] = production
+            self.production_prediction_models[name] = production_prediction
 
             filename = f"production_{self.slug(name)}.joblib"
 
-            estimator_classes = list(production.named_steps["classifier"].classes_)
+            estimator_classes = list(production_prediction.classes_)
 
             artifact = {
-                "model": production,
+                "model": production_prediction,
                 "model_type": name,
                 "model_role": ("production_full_data_refit"),
                 "features": list(self.cfg.features),
@@ -2703,6 +3748,10 @@ class ClassificationAnalysis:
                 "estimator_class_order": (estimator_classes),
                 "selection_metric": (self.cfg.selection_metric),
                 "best_parameters": (self.best_params[name]),
+                "calibration_method": self.cfg.calibration_method,
+                "selection_score_role": "internal_model_selection",
+                "independent_generalization_estimate": False,
+                "duplicate_policy": self.cfg.duplicate_policy,
                 "provenance": self.get_provenance_block(fitted_at_utc=fitted_at_utc),
                 "model_context": {
                     "model_role": "production_full_data_refit",
@@ -2711,6 +3760,9 @@ class ClassificationAnalysis:
                     "reporting_class_order": self.classes,
                     "estimator_class_order": estimator_classes,
                     "selection_metric": self.cfg.selection_metric,
+                    "calibration_method": self.cfg.calibration_method,
+                    "calibration_training_partition": "all_available_rows",
+                    "duplicate_policy": self.cfg.duplicate_policy,
                     "best_parameters": self.best_params[name],
                     "random_state": self.cfg.random_state,
                     "training_partition": "all_available_rows",
@@ -2753,9 +3805,9 @@ class ClassificationAnalysis:
                 }
             )
 
-        cv_selected_model = self.production_models[cv_selected_name]
+        cv_selected_model = self.production_prediction_models[cv_selected_name]
 
-        cv_selected_classes = list(cv_selected_model.named_steps["classifier"].classes_)
+        cv_selected_classes = list(cv_selected_model.classes_)
         cv_selected_fitted_at_utc = production_fitted_timestamps[cv_selected_name]
 
         cv_selected_artifact = {
@@ -2767,6 +3819,7 @@ class ClassificationAnalysis:
             "estimator_class_order": (cv_selected_classes),
             "selection_metric": (self.cfg.selection_metric),
             "best_parameters": (self.best_params[cv_selected_name]),
+            "calibration_method": self.cfg.calibration_method,
             "cv_selection_rank": 1,
             "selection_basis": (
                 "Highest ranked non-nested tuning-CV result "
@@ -2789,6 +3842,9 @@ class ClassificationAnalysis:
                 "reporting_class_order": self.classes,
                 "estimator_class_order": cv_selected_classes,
                 "selection_metric": self.cfg.selection_metric,
+                "calibration_method": self.cfg.calibration_method,
+                "calibration_training_partition": "all_available_rows",
+                "duplicate_policy": self.cfg.duplicate_policy,
                 "best_parameters": self.best_params[cv_selected_name],
                 "random_state": self.cfg.random_state,
                 "training_partition": "all_available_rows",
@@ -2857,6 +3913,8 @@ class ClassificationAnalysis:
         configuration["class_order"] = (
             list(self.cfg.class_order) if self.cfg.class_order else None
         )
+        if not self.cfg.nested_cv:
+            configuration["outer_cv_folds"] = None
 
         input_sha256, source_sha256 = self.compute_hashes()
 
@@ -2882,11 +3940,20 @@ class ClassificationAnalysis:
                 "the chronological training partition."
             ),
             "cv_interpretation": (
-                "Reported training-partition CV scores "
-                "are hyperparameter-tuning scores and "
-                "selected-configuration CV scores. They "
-                "are not nested-CV generalization estimates."
+                "Reported non-nested training-partition CV scores are internal "
+                "model-selection scores, are optimistic for the selected family, "
+                "and are not independent generalization estimates. The final "
+                "chronological holdout remains the independent evaluation partition."
             ),
+            "score_role": "internal_model_selection",
+            "independent_generalization_estimate": False,
+            "cv_strategy": self.cfg.cv_strategy,
+            "nested_cv": self.cfg.nested_cv,
+            "outer_cv_folds": self.cfg.outer_cv_folds if self.cfg.nested_cv else None,
+            "nested_cv_estimated_candidate_fits": self.nested_cv_estimated_fits,
+            "duplicate_policy": self.cfg.duplicate_policy,
+            "duplicate_rows_before_policy": self.duplicate_rows_before,
+            "duplicate_rows_after_policy": self.duplicate_rows_after,
             "final_evaluation": (
                 "The chronological holdout is used for "
                 "final evaluation after hyperparameter "
@@ -2924,7 +3991,9 @@ class ClassificationAnalysis:
                 ),
                 "selection_partition": "chronological_training_partition",
                 "selection_metric": self.cfg.selection_metric,
-                "selection_score_type": "mean non-nested tuning-CV score",
+                "selection_score_type": "internal training-partition CV selection score",
+                "selection_score_role": "internal_model_selection",
+                "independent_generalization_estimate": False,
                 "selection_score_mean": self.cv_selected_score_mean,
                 "selection_score_std": self.cv_selected_score_std,
                 "cv_selection_rank": 1,
@@ -2934,7 +4003,7 @@ class ClassificationAnalysis:
                 ),
                 "tie_breaking_rule": self.CV_SELECTION_TIE_BREAKING_RULE,
                 "holdout_used_for_selection": False,
-                "nested_cv": False,
+                "nested_cv": self.cfg.nested_cv,
                 "production_refit_partition": "all_available_rows",
                 "artifact_filename": "cv_selected_production_model.joblib",
                 "model_family_cv_ranking": [
@@ -3139,8 +4208,38 @@ def parse_args() -> argparse.Namespace:
         "--cv-folds",
         type=int,
         default=5,
-        help="Maximum number of stratified CV folds",
+        help="Number of training-partition CV folds",
     )
+
+    parser.add_argument(
+        "--cv-strategy",
+        choices=sorted(SUPPORTED_CV_STRATEGIES),
+        default="expanding-window",
+    )
+    parser.add_argument("--cv-gap", type=int, default=0)
+    parser.add_argument("--cv-test-size", type=int, default=None)
+    parser.add_argument("--cv-max-train-size", type=int, default=None)
+    parser.add_argument("--cv-min-class-count", type=int, default=2)
+    parser.add_argument("--nested-cv", action="store_true")
+    parser.add_argument("--outer-cv-folds", type=int, default=3)
+    parser.add_argument("--nested-cv-fit-warning-threshold", type=int, default=1000)
+    parser.add_argument(
+        "--duplicate-policy",
+        choices=sorted(SUPPORTED_DUPLICATE_POLICIES),
+        default="warn",
+    )
+    parser.add_argument(
+        "--calibration-method",
+        choices=sorted(SUPPORTED_CALIBRATION_METHODS),
+        default="none",
+    )
+    parser.add_argument("--calibration-cv-folds", type=int, default=3)
+    parser.add_argument("--isotonic-min-class-support", type=int, default=100)
+    parser.add_argument("--holdout-low-support-threshold", type=int, default=20)
+    parser.add_argument("--holdout-very-low-support-threshold", type=int, default=5)
+    parser.add_argument("--holdout-bootstrap-repeats", type=int, default=0)
+    parser.add_argument("--holdout-bootstrap-block-size", type=int, default=None)
+    parser.add_argument("--confidence-level", type=float, default=0.95)
 
     parser.add_argument(
         "--random-state",
@@ -3229,6 +4328,46 @@ def parse_args() -> argparse.Namespace:
     if args.cv_folds < 2:
         parser.error("--cv-folds must be at least 2")
 
+    if args.cv_gap < 0:
+        parser.error("--cv-gap must be nonnegative")
+    if args.cv_test_size is not None and args.cv_test_size < 1:
+        parser.error("--cv-test-size must be at least 1")
+    if args.cv_max_train_size is not None and args.cv_max_train_size < 1:
+        parser.error("--cv-max-train-size must be at least 1")
+    if args.cv_min_class_count < 1:
+        parser.error("--cv-min-class-count must be at least 1")
+    if args.cv_strategy == "stratified-shuffled" and (
+        args.cv_gap
+        or args.cv_test_size is not None
+        or args.cv_max_train_size is not None
+    ):
+        parser.error(
+            "--cv-gap, --cv-test-size, and --cv-max-train-size require expanding-window CV"
+        )
+    if args.nested_cv and args.cv_strategy != "expanding-window":
+        parser.error("--nested-cv requires --cv-strategy expanding-window")
+    if args.outer_cv_folds < 2:
+        parser.error("--outer-cv-folds must be at least 2")
+    if args.nested_cv_fit_warning_threshold < 1:
+        parser.error("--nested-cv-fit-warning-threshold must be positive")
+    if args.calibration_cv_folds < 2:
+        parser.error("--calibration-cv-folds must be at least 2")
+    if args.isotonic_min_class_support < 1:
+        parser.error("--isotonic-min-class-support must be at least 1")
+    if args.holdout_very_low_support_threshold < 1 or (
+        args.holdout_very_low_support_threshold > args.holdout_low_support_threshold
+    ):
+        parser.error("Holdout support thresholds require 1 <= very-low <= low")
+    if args.holdout_bootstrap_repeats < 0:
+        parser.error("--holdout-bootstrap-repeats must be nonnegative")
+    if (
+        args.holdout_bootstrap_block_size is not None
+        and args.holdout_bootstrap_block_size < 1
+    ):
+        parser.error("--holdout-bootstrap-block-size must be at least 1")
+    if not 0 < args.confidence_level < 1:
+        parser.error("--confidence-level must be between 0 and 1")
+
     if args.n_jobs == 0 or args.n_jobs < -1:
         parser.error("--n-jobs must be -1 or a positive integer")
 
@@ -3262,6 +4401,23 @@ def main() -> None:
         near_constant_threshold=(args.near_constant_threshold),
         selection_metric=(args.selection_metric),
         output_policy=args.output_policy,
+        cv_strategy=args.cv_strategy,
+        cv_gap=args.cv_gap,
+        cv_test_size=args.cv_test_size,
+        cv_max_train_size=args.cv_max_train_size,
+        cv_min_class_count=args.cv_min_class_count,
+        nested_cv=args.nested_cv,
+        outer_cv_folds=args.outer_cv_folds,
+        nested_cv_fit_warning_threshold=args.nested_cv_fit_warning_threshold,
+        duplicate_policy=args.duplicate_policy,
+        calibration_method=args.calibration_method,
+        calibration_cv_folds=args.calibration_cv_folds,
+        isotonic_min_class_support=args.isotonic_min_class_support,
+        holdout_low_support_threshold=args.holdout_low_support_threshold,
+        holdout_very_low_support_threshold=args.holdout_very_low_support_threshold,
+        holdout_bootstrap_repeats=args.holdout_bootstrap_repeats,
+        holdout_bootstrap_block_size=args.holdout_bootstrap_block_size,
+        confidence_level=args.confidence_level,
     )
 
     ClassificationAnalysis(cfg).run()

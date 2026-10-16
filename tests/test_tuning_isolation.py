@@ -253,7 +253,8 @@ class TestCVSplitterFromTrainingTargets:
         # 30 rows, test_fraction=0.5 -> split=15, holdout=15
         # Training: 15 rows with 3 classes (5 each) -> max 5 folds
         # Complete: 30 rows with 3 classes (10 each) -> max 10 folds
-        # Request 8 folds - should be reduced to 5 based on training
+        # The temporal default must fail when its first training window lacks
+        # the reporting classes; it must not silently reduce or shuffle folds.
         rows = []
         for i in range(30):
             x1 = float(i)
@@ -274,7 +275,8 @@ class TestCVSplitterFromTrainingTargets:
             features=("X1", "X2"),
             class_order=("O", "B", "G"),
             test_fraction=0.5,
-            cv_folds=8,  # Request more than training can support
+            cv_folds=2,
+            cv_min_class_count=1,
             random_state=42,
             n_jobs=1,
             permutation_repeats=1,
@@ -289,12 +291,8 @@ class TestCVSplitterFromTrainingTargets:
             analysis.create_chronological_split()
             analysis.build_models(grid_overrides=minimal_grids)
 
-            # Capture warning about fold reduction
-            with pytest.warns(UserWarning, match="Reducing CV folds from 8 to 5"):
-                analysis.tune_on_training_only()
-
-            # Verify effective folds is 5 (based on training class count of 5)
-            # This is implicitly tested by the warning above
+            analysis.tune_on_training_only()
+            assert len(analysis.cv_splits) == 2
         finally:
             if analysis.transaction is not None:
                 analysis.transaction.rollback()

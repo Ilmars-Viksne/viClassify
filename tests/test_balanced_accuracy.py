@@ -156,6 +156,8 @@ def test_evaluate_untouched_holdout_integration(minimal_grids, tmp_path):
         class_order=("O", "B", "G", "M"),
         test_fraction=0.25,  # Last 5 rows (M, O, B, M, M) - no G in holdout
         cv_folds=2,
+        cv_strategy="stratified-shuffled",
+        cv_min_class_count=1,
         random_state=42,
         n_jobs=1,
         permutation_repeats=1,

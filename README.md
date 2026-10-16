@@ -43,7 +43,9 @@ The application is intended for scientific and engineering datasets in which CSV
 - A final chronological holdout created before any hyperparameter tuning.
 - Median imputation fitted inside each machine-learning pipeline.
 - Standardization for Logistic Regression only.
-- Stratified shuffled K-fold cross-validation on the chronological training partition.
+- Forward-only expanding-window cross-validation by default, with an explicit stratified shuffled compatibility mode.
+- Fold-level class support checks, auditable split assignments, optional nested CV, and configurable temporal gaps/windows.
+- Holdout class support, Wilson recall intervals, optional moving-block bootstrap intervals, duplicate audits, and optional probability calibration.
 - Multi-metric `GridSearchCV` with a configurable selection metric.
 - Logistic Regression, Random Forest, Extra Trees, and Histogram Gradient Boosting.
 - Evaluation artifacts fitted on chronological training data only.
@@ -82,7 +84,15 @@ split_index = floor(n_rows * (1 - test_fraction))
 
 Rows before `split_index` form the training partition. The remaining final rows form the testing partition. Tuning, preprocessing fitting, and configuration selection use only the training partition. After evaluation, the selected hyperparameters are retained and each production pipeline is refitted on the complete dataset.
 
-> **Important:** the cross-validation folds are stratified and shuffled, not chronological. This is suitable only when observations within the chronological training partition may reasonably be treated as exchangeable. It does not eliminate leakage caused by repeated subjects, specimens, batches, cycles, or temporally dependent neighboring observations.
+The default `expanding-window` strategy uses `TimeSeriesSplit`; each training fold precedes its validation fold. `--cv-gap` excludes rows immediately before validation, `--cv-test-size` sets validation-window size, and `--cv-max-train-size` caps the rolling training window. Each fold is checked for chronology and minimum per-class training support. Invalid folds fail rather than being silently skipped. Use `--cv-strategy stratified-shuffled` only when exchangeability within the training partition is justified; its scores are not temporal estimates.
+
+Cross-validation scores used to choose parameters and model families are **training-partition selection scores**, not independent performance estimates. They are generally optimistic after selection. `--nested-cv` optionally adds forward-only outer evaluation folds, which reduce selection bias but still do not replace the untouched final chronological holdout.
+
+Holdout metrics are reported with per-class support and Wilson recall intervals. Rare classes make recall and macro-averaged metrics unstable; read point estimates together with `holdout_class_support.csv` and interval exports. Optional `--holdout-bootstrap-repeats` uses a deterministic moving-block bootstrap (block size 1 is an iid row bootstrap).
+
+Duplicate auditing distinguishes exact feature-and-target duplicates from identical-feature rows with conflicting targets. `--duplicate-policy` accepts `keep`, `warn` (default), `fail`, and `drop-identical`; the last removes only later exact duplicates and preserves original row positions in the audit. Duplicates can cause leakage in shuffled CV, while temporal neighboring duplicates may also make validation optimistic.
+
+Optional `--calibration-method sigmoid|isotonic` calibrates probabilities using forward-only training-partition folds. Isotonic calibration requires adequate class support. Calibration diagnostics include Brier scores and reliability bins. Balanced accuracy uses macro recall over the fixed reporting-class order, assigning zero recall to a reporting class absent from the evaluated sample; support and interval outputs identify absent classes separately.
 
 ## Requirements
 
@@ -644,7 +654,7 @@ Prediction_Confidence = largest predicted class probability
 Prediction_Margin     = largest probability - second-largest probability
 ```
 
-These quantities indicate separation among model outputs, not guaranteed empirical correctness. viClassify does not currently perform probability calibration or calibration-curve analysis.
+These quantities indicate separation among model outputs, not guaranteed empirical correctness. Optional calibration and calibration-curve diagnostics are available with `--calibration-method`.
 
 ## Output files
 
@@ -1041,14 +1051,14 @@ viclassify --data data_OF.csv
 ## Limitations and scientific cautions
 
 - **Chronology must be meaningful.** The final-row holdout evaluates a future-like segment only when file order represents a defensible sequence.
-- **CV inside training is shuffled.** It does not reproduce forward-chaining or blocked temporal validation.
+- **Temporal CV requires chronological row order.** Expanding-window validation follows row order and cannot correct an incorrectly ordered input file.
 - **No grouped validation is implemented.** Related records from the same subject, specimen, batch, cycle, or run can appear in both training and validation folds.
-- **No nested CV is implemented.** Training-partition CV scores are used for hyperparameter selection and are not unbiased nested-CV estimates.
+- **Nested CV is optional and uses training rows only.** Internal selection scores remain optimistic; nested results still do not replace external validation.
 - **The holdout is reused across model families.** It remains untouched during tuning, but inspecting four families on one holdout can still influence human model choice. The scripted CV-selected production model artifact is selected by training CV, not holdout score.
-- **No calibration analysis is performed.** Predicted probabilities and confidence values should not automatically be interpreted as calibrated frequencies.
+- **Calibration is optional.** Without calibration, predicted probabilities and confidence values should not automatically be interpreted as calibrated frequencies.
 - **No threshold optimization is performed.** Class predictions use each estimator's default decision rule.
 - **No sample or class weighting is used for Histogram Gradient Boosting.** Severe imbalance may require a different design.
-- **Duplicates are reported but retained.** Repeated observations can inflate apparent performance if they are scientifically dependent.
+- **Duplicate handling is configurable.** Repeated observations can inflate apparent performance if they are scientifically dependent; conflicting-target feature duplicates require investigation.
 - **Constant and near-constant predictors are retained.** They may add cost without predictive information.
 - **All predictors must be numerical.** Categorical encoding is not implemented.
 - **Correlation is not causation.** Pearson captures linear association; Spearman captures monotonic rank association. Neither establishes a causal relation.
@@ -1135,10 +1145,9 @@ By default, viClassify enforces `--output-policy fail` and refuses to run if the
 Potential future extensions include:
 
 - grouped and stratified-group cross-validation;
-- blocked, rolling, or expanding-window temporal validation;
+- grouped and stratified-group cross-validation;
 - continuous integration across supported Python versions;
 - expanded regression and end-to-end test coverage;
-- probability calibration and calibration plots;
 - decision-threshold optimization;
 - cost-sensitive Histogram Gradient Boosting;
 - categorical predictors;

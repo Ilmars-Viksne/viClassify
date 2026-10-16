@@ -378,6 +378,7 @@ class TestCLIValidation:
             class_order=None,
             test_fraction=0.25,
             cv_folds=2,
+            cv_strategy="stratified-shuffled",
             random_state=42,
             n_jobs=1,
             permutation_repeats=1,
