@@ -1,0 +1,103 @@
+﻿name: Test and build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    env:
+      UV_PYTHON: "3.12"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: 0.13.1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: uv lock --check
+      - run: uv sync --frozen --extra dev
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run python -m compileall -q src tests viclassify_cli.py
+
+  unit:
+    runs-on: ubuntu-latest
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: 0.13.1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: uv sync --frozen --extra dev
+      - run: uv run python -m pytest -q -m "not integration and not slow"
+
+  integration:
+    runs-on: ubuntu-latest
+    env:
+      UV_PYTHON: "3.12"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: 0.13.1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: uv sync --frozen --extra dev
+      - run: uv run python -m pytest -q -m integration
+
+  build:
+    runs-on: ubuntu-latest
+    env:
+      UV_PYTHON: "3.12"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: 0.13.1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: uv lock --check
+      - run: uv sync --frozen --extra dev
+      - run: uv build
+      - run: uv run twine check dist/*
+      - run: python -m zipfile -l dist/*.whl
+      - shell: bash
+        run: |
+          python - <<'PY'
+          import glob
+          import zipfile
+          wheel = glob.glob("dist/*.whl")[0]
+          names = set(zipfile.ZipFile(wheel).namelist())
+          required = {
+              "viclassify/__init__.py",
+              "viclassify/__main__.py",
+              "viclassify/cli.py",
+              "viclassify/provenance.py",
+              "viclassify/version.py",
+          }
+          assert required <= names
+          assert not any(name.startswith(("tests/", ".venv/")) for name in names)
+          assert not any(name.endswith((".csv", ".joblib")) for name in names)
+          PY
+      - shell: bash
+        run: |
+          python -m venv wheel-test-env
+          wheel-test-env/bin/python -m pip install dist/*.whl
+          wheel-test-env/bin/viclassify --version
+          wheel-test-env/bin/python -m viclassify --version
+          wheel-test-env/bin/python "$GITHUB_WORKSPACE/viclassify_cli.py" --version
+          cd /tmp
+          "$GITHUB_WORKSPACE/wheel-test-env/bin/python" -c 'import viclassify; print(viclassify.__version__)'

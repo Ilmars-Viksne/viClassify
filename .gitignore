@@ -2,19 +2,20 @@
 # Project Specific
 # ==========================================
 prompt*.md
-
+data_*.csv
 
 # ==========================================
 # OS Specific
 # ==========================================
 results_*/
-*.csv
+results*/
 
 # ==========================================
 # Python Bytecode & Cache
 # ==========================================
 .pytest*/
 _pycache__/
+__pycache__/
 *.py[cod]
 *$py.class
 
@@ -25,6 +26,7 @@ _pycache__/
 # Virtual Environments
 # ==========================================
 .venv/
+.venv-*/
 venv/
 ENV/
 env/

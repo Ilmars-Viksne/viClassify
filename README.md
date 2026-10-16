@@ -110,20 +110,26 @@ Install the runtime dependencies:
 python -m pip install numpy pandas matplotlib scipy scikit-learn joblib
 ```
 
-For a reproducible project, pin tested versions in a `requirements.txt`, `requirements.lock`, or `pyproject.toml`. viClassify records application version `0.4.0` and package versions in `run_metadata.json`, but it does not currently enforce package-version constraints.
+The package metadata declares supported Python and dependency ranges. `uv.lock` is the canonical resolved environment for reproducible development and execution.
 
 ## Installation
 
-The current project is a standalone Python script rather than an installed package.
+viClassify is installable and supports Python 3.10, 3.11, and 3.12. The recommended development install uses the committed `uv.lock`:
 
-Suggested repository layout:
+```bash
+git clone <repository-url>
+cd viClassify
+uv sync --frozen --extra dev
+```
 
-```text
-viClassify/
-├── viclassify_cli.py
-├── README.md
-├── data_OF.csv
-└── data_OBGM.csv
+When intentionally changing dependency constraints, regenerate and review the lock with `uv lock`, then verify it with `uv lock --check` before committing both files.
+
+For a standard editable install without `uv`:
+
+```bash
+python -m venv .venv
+python -m pip install --upgrade pip
+python -m pip install -e ".[dev]"
 ```
 
 ### Windows PowerShell
@@ -132,8 +138,8 @@ viClassify/
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
-python -m pip install numpy pandas matplotlib scipy scikit-learn joblib
-python .\viclassify_cli.py --help
+python -m pip install -e ".[dev]"
+viclassify --help
 ```
 
 ### Linux or macOS
@@ -142,9 +148,11 @@ python .\viclassify_cli.py --help
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install numpy pandas matplotlib scipy scikit-learn joblib
-python viclassify_cli.py --help
+python -m pip install -e ".[dev]"
+viclassify --help
 ```
+
+The supported version commands are `viclassify --version`, `python -m viclassify --version`, and `python viclassify_cli.py --version`. Direct script execution remains backward-compatible; prefer `viclassify`.
 
 ## Expected data format
 
@@ -247,7 +255,16 @@ python viclassify_cli.py \
 | `--features` | No | `X1 X2 X3 X4 X5 X6 X7` | One or more ordered, nonempty, distinct predictor-column names. |
 | `--class-order` | No | Detected and sorted | Optional distinct, nonempty reporting labels. Unobserved requested labels produce a warning and are omitted. Observed labels not listed are appended in sorted order. |
 | `--test-fraction` | No | `0.20` | Fraction of final rows reserved for chronological holdout evaluation. Must be strictly between 0 and 1. |
-| `--cv-folds` | No | `5` | Requested maximum stratified fold count. Must be at least 2. Automatically limited by the rarest class count in chronological training data. |
+| `--cv-folds` | No | `5` | Number of training-partition CV folds. Must be at least 2; invalid temporal fold support fails clearly. |
+| `--cv-strategy` | No | `expanding-window` | Forward-only temporal folds or explicit `stratified-shuffled` compatibility CV. |
+| `--cv-gap` | No | `0` | Training rows excluded immediately before each temporal validation window. |
+| `--cv-test-size` | No | Automatic | Temporal validation window size; smaller values increase the initial training window. |
+| `--cv-max-train-size` | No | Unlimited | Optional rolling cap on temporal training window size. |
+| `--deterministic` | No | Off | Forces viClassify estimator parallelism to one; does not guarantee cross-platform bitwise identity. |
+| `--show-environment` | No | Off | Print environment, source, lock, and Git provenance without running an analysis. |
+| `--json` | No | Off | Emit `--show-environment` output as machine-readable JSON. |
+| `--inspect-model PATH` | No | None | Inspect artifact metadata and compare fitting/current environments. Only inspect trusted joblib files. |
+| `--strict-compatibility` | No | Off | Return nonzero for compatibility warnings; requires `--inspect-model`. |
 | `--random-state` | No | `42` | Seed supplied to shuffled CV, supported estimators, and permutation importance. |
 | `--n-jobs` | No | `-1` | Parallel workers. Must be `-1` or a positive integer. `-1` requests all processors supported by joblib/scikit-learn. |
 | `--permutation-repeats` | No | `20` | Number of holdout permutations per feature and model. Must be positive. |
@@ -785,12 +802,16 @@ production_logistic_coefficients.png
 
 ```text
 run_metadata.json
+environment.json
+environment_packages.txt
 generated_files.txt
 ```
 
-`run_metadata.json` contains run-level metadata: application version `0.4.0`, transaction run ID, input and source hashes (`input_sha256`, `source_sha256`), start and completion timestamps (`started_at_utc`, `completed_at_utc`), configuration, observed reporting class order, validation and interpretation notes, operating system and platform details, Python and package versions, and the complete `model_family_cv_ranking` list sorted by `cv_selection_rank` along with the authoritative `tie_breaking_rule`.
+`run_metadata.json` contains the application version, transaction run ID, input and source hashes, lock hash, Git identity, timestamps, full configuration, validation notes, platform details, and model-family ranking. `environment.json` records direct dependencies, numerical backend identifiers, selected thread variables, source/input hashes, lock and Git identity. `environment_packages.txt` is a sorted snapshot of all installed distributions; it may include unrelated packages and is diagnostic rather than canonical. `uv.lock` remains the canonical resolved environment.
 
-Each `.joblib` artifact also contains artifact-level provenance and model context. Provenance includes `created_at_utc`, `fitted_at_utc`, viClassify and artifact schema versions, run ID, input and source hashes, Python and package versions, and platform details. Model context includes model role, training partition, fitted row count, feature order, target, reporting and estimator class orders, selection metric, best parameters, and random state. `fitted_at_utc` records when that estimator was fitted; the final run completion time is recorded in `run_metadata.json` and is not embedded in artifacts serialized before completion. The selected production alias has role `cv_selected_production_full_data_refit` and reuses the selected production estimator, including its original fitting timestamp.
+Each `.joblib` artifact also contains artifact-level provenance, compatibility metadata, and model context. Compatibility metadata records artifact schema, package/runtime versions, source hash, lock hash, and serialization format. Python and scikit-learn major-version incompatibilities are errors; other version or source/lock differences are warnings. These checks are diagnostic, not proof that predictions will be identical. `fitted_at_utc` records when an estimator was fitted; the final run completion time is in `run_metadata.json`.
+
+The generated v0.4.0 artifacts serialize scikit-learn pipelines inside dictionaries; they do not serialize `Config`, `ClassificationAnalysis`, or viClassify-defined scoring functions. The compatibility script continues to re-export established public classes and metric/probability helpers for older Python imports and pickle module lookups. This compatibility layer does not make old artifacts compatible with arbitrary scikit-learn versions.
 
 ### Output transaction behavior
 
@@ -811,7 +832,12 @@ reporting_class_order
 estimator_class_order
 selection_metric
 best_parameters
+compatibility
+provenance
+model_context
 ```
+
+Inspect metadata and compatibility from the CLI with `viclassify --inspect-model path/to/model.joblib`; add `--strict-compatibility` to make version/hash warnings return a nonzero exit status. Inspection does not run predictions.
 
 Example:
 
@@ -909,6 +935,18 @@ The seed controls shuffled fold assignment, supported estimator randomization, a
 - compatible Python and package versions;
 - consistent parallel numerical libraries and platform behavior; and
 - unchanged source code and search grids.
+
+For repeatable local runs, check out the exact Git revision, install the committed lock, inspect the environment, and record the exact input hash and command:
+
+```bash
+git checkout <commit>
+uv sync --frozen --extra dev
+uv run viclassify --show-environment
+uv run viclassify --data data_OF.csv --output results_OF --target Y \
+  --features X1 X2 X3 X4 X5 X6 X7 --random-state 42 --n-jobs 1
+```
+
+`--deterministic` forces viClassify estimator parallelism to one. Set BLAS thread controls such as `OMP_NUM_THREADS=1` before Python starts when needed; changing them after NumPy is imported does not guarantee their effect. A fixed lock and deterministic code paths improve repeatability but do not guarantee bitwise-equal floating-point results across operating systems, CPU architectures, BLAS/LAPACK implementations, or scikit-learn versions. Joblib artifacts are version-sensitive and must only be loaded from trusted sources. Full-data production refits have no untouched performance estimate of their own.
 
 For traceable scientific runs, archive together:
 
@@ -1135,7 +1173,7 @@ By default, viClassify enforces `--output-policy fail` and refuses to run if the
 
 ## Security
 
-- Load `.joblib` files only from trusted sources. Deserialization can execute malicious code.
+- **Warning: joblib model artifacts use Python pickle semantics. Load them only from trusted sources; deserialization can execute malicious code.** Compatibility inspection also loads the artifact and is not a safe sandbox for untrusted files.
 - Treat input CSV files and generated predictions according to applicable data-governance requirements.
 - Review output directories before sharing them because prediction tables reproduce selected feature values and target labels.
 - Avoid exposing sensitive filesystem paths from `run_metadata.json`; it records resolved input and output paths.
