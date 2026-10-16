@@ -8,6 +8,130 @@ import pytest
 from viclassify_cli import ClassificationAnalysis, Config, OutputTransaction
 
 
+def _analysis(tmp_path):
+    data_file = tmp_path / "data.csv"
+    data_file.write_text("X,Y\n1,A\n2,B\n", encoding="utf-8")
+    cfg = Config(
+        data=data_file,
+        output=tmp_path / "output",
+        target="Y",
+        features=("X",),
+        class_order=None,
+        test_fraction=0.25,
+        cv_folds=2,
+        random_state=42,
+        n_jobs=1,
+        permutation_repeats=1,
+        dpi=50,
+    )
+    return ClassificationAnalysis(cfg)
+
+
+def test_path_requires_prepared_output(tmp_path):
+    analysis = _analysis(tmp_path)
+    with pytest.raises(RuntimeError, match="has not been prepared"):
+        analysis.path("result.csv")
+    assert not analysis.generated_files
+
+
+@pytest.mark.parametrize("name", ["", "   ", "."])
+def test_path_rejects_empty_and_root_names(tmp_path, name):
+    analysis = _analysis(tmp_path)
+    analysis.prepare_output()
+    try:
+        before = set(analysis.generated_files)
+        with pytest.raises(ValueError):
+            analysis.path(name)
+        assert analysis.generated_files == before
+        assert list(analysis.working_output_dir.iterdir()) == []
+    finally:
+        analysis.transaction.rollback()
+
+
+@pytest.mark.parametrize(
+    "name", ["../escaped.txt", "nested/../../escaped.txt", "reports/../.."]
+)
+def test_path_rejects_parent_traversal(tmp_path, name):
+    analysis = _analysis(tmp_path)
+    analysis.prepare_output()
+    try:
+        before = set(analysis.generated_files)
+        with pytest.raises(ValueError, match="unsafe|outside staging"):
+            analysis.path(name)
+        assert analysis.generated_files == before
+        assert not (tmp_path / "escaped.txt").exists()
+    finally:
+        analysis.transaction.rollback()
+
+
+def test_path_rejects_absolute_path(tmp_path):
+    analysis = _analysis(tmp_path)
+    analysis.prepare_output()
+    destination = (tmp_path / "absolute.txt").resolve()
+    try:
+        with pytest.raises(ValueError, match="must be relative"):
+            analysis.path(str(destination))
+        assert not analysis.generated_files
+        assert not destination.exists()
+    finally:
+        analysis.transaction.rollback()
+
+
+def test_path_registers_safe_nested_path_without_creating_it(tmp_path):
+    analysis = _analysis(tmp_path)
+    staging = analysis.prepare_output()
+    try:
+        result = analysis.path("reports/nested/result.csv")
+        assert result == staging / "reports/nested/result.csv"
+        assert analysis.generated_files == {"reports/nested/result.csv"}
+        assert not result.exists()
+        assert not result.parent.exists()
+    finally:
+        analysis.transaction.rollback()
+
+
+def test_run_rolls_back_when_running_status_fails(tmp_path, monkeypatch):
+    analysis = _analysis(tmp_path)
+    sentinel = RuntimeError("running status failed")
+
+    def fail_running(status, error_info=None):
+        if status == "running":
+            raise sentinel
+
+    monkeypatch.setattr(analysis, "write_run_status", fail_running)
+    with pytest.raises(RuntimeError) as caught:
+        analysis.run()
+    assert caught.value is sentinel
+    assert not analysis.working_output_dir.exists()
+    assert not analysis.final_output_path.exists()
+    assert not analysis.transaction.backup_path.exists()
+    assert not analysis.transaction.prepared
+    assert not analysis.transaction.committed
+
+
+def test_failed_status_error_does_not_hide_workflow_error(tmp_path, monkeypatch):
+    analysis = _analysis(tmp_path)
+    original = RuntimeError("workflow failed")
+
+    def fail_load():
+        raise original
+
+    def fail_status(status, error_info=None):
+        if status == "failed":
+            raise OSError("status reporting failed")
+
+    monkeypatch.setattr(analysis, "load", fail_load)
+    monkeypatch.setattr(analysis, "write_run_status", fail_status)
+    with pytest.raises(RuntimeError) as caught:
+        analysis.run()
+    assert caught.value is original
+    assert not analysis.working_output_dir.exists()
+    assert not analysis.final_output_path.exists()
+    assert not analysis.transaction.backup_path.exists()
+    assert not analysis.transaction.prepared
+    assert not analysis.transaction.committed
+
+
 class TestOutputTransaction:
     """Tests for OutputTransaction and CLI output policy enforcement."""
 

@@ -173,6 +173,16 @@ class OutputTransaction:
         self._prepared = False
         self._committed = False
 
+    @property
+    def prepared(self) -> bool:
+        """Return whether staging is currently prepared."""
+        return self._prepared
+
+    @property
+    def committed(self) -> bool:
+        """Return whether staged output was committed successfully."""
+        return self._committed
+
     def prepare(self) -> Path:
         """Inspect paths and set up the staging directory."""
         if self._committed:
@@ -757,10 +767,32 @@ class ClassificationAnalysis:
                 "Call prepare_output() or run() before writing artifacts."
             )
 
-        normalized_name = Path(name).as_posix()
-        self.generated_files.add(normalized_name)
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("Generated output path must be a non-empty relative path.")
 
-        return self.working_output_dir / normalized_name
+        relative_path = Path(name)
+        if relative_path.is_absolute():
+            raise ValueError(f"Generated output path must be relative: {name!r}")
+
+        normalized_path = Path(relative_path.as_posix())
+        if normalized_path == Path(".") or ".." in normalized_path.parts:
+            raise ValueError(f"Generated output path is unsafe: {name!r}")
+
+        staging_root = self.working_output_dir.resolve()
+        output_path = self.working_output_dir / normalized_path
+        resolved_output_path = output_path.resolve()
+        try:
+            resolved_output_path.relative_to(staging_root)
+        except ValueError as exc:
+            raise ValueError(
+                f"Generated output path resolves outside staging: {name!r}"
+            ) from exc
+
+        if resolved_output_path == staging_root:
+            raise ValueError(f"Generated output path must identify a file: {name!r}")
+
+        self.generated_files.add(normalized_path.as_posix())
+        return output_path
 
     @staticmethod
     def slug(name: str) -> str:
@@ -2834,11 +2866,12 @@ class ClassificationAnalysis:
 
     def run(self) -> None:
         self.prepare_output()
-
-        self.started_at_utc = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        self.write_run_status("running")
-
         try:
+            self.started_at_utc = datetime.datetime.now(
+                datetime.timezone.utc
+            ).isoformat()
+            self.write_run_status("running")
+
             self.load()
             self.audit_and_describe()
             self.correlations()
@@ -2856,6 +2889,8 @@ class ClassificationAnalysis:
             self.metadata()
             self.write_run_status("completed")
             self.write_generated_file_manifest()
+            if self.transaction is None:
+                raise RuntimeError("Output transaction is unavailable during commit.")
             self.transaction.commit(self.generated_files)
         except Exception as exc:
             try:
@@ -2870,9 +2905,9 @@ class ClassificationAnalysis:
                             "message": str(exc),
                         },
                     )
-            except OSError:
+            except Exception:  # noqa: BLE001, S110 - status reporting is best-effort
                 pass
-            if self.transaction is not None:
+            if self.transaction is not None and not self.transaction.committed:
                 self.transaction.rollback()
             raise
 
