@@ -578,7 +578,7 @@ For predicted probability `p_i,y_i` assigned to the true class:
 log_loss = -(1 / N) * sum_i log(p_i,y_i)
 ```
 
-Log loss rewards calibrated, confident correct predictions and strongly penalizes confident errors. Prior to log-loss evaluation, viClassify strictly validates the predicted probability matrix (shapes, finiteness, bounds in [0, 1], row sums equal to 1.0, and presence of all observed true labels in the estimator class order). If probability validation or log-loss calculation fails, a descriptive `RuntimeError` is raised with full model and evaluation context.
+Log loss rewards calibrated, confident correct predictions and strongly penalizes confident errors. Prior to log-loss evaluation, viClassify strictly validates the predicted probability matrix (shapes, finiteness, bounds in [0, 1], row sums equal to 1.0, and presence of all observed true labels in the estimator class order). Invalid probabilities and log-loss calculation failures raise a descriptive `RuntimeError` with full model and evaluation context; they are not converted to `NaN`. Successful completed outputs contain finite numeric `log_loss` values and no log-loss status or error columns.
 
 ### CV-to-holdout gap
 
@@ -648,7 +648,7 @@ These quantities indicate separation among model outputs, not guaranteed empiric
 
 ## Output files
 
-The exact set of files depends on the four fixed model families. `generated_files.txt` is the authoritative manifest for a completed run.
+The exact set of files depends on the four fixed model families. `generated_files.txt` is the authoritative manifest for a completed run. Before promotion, validation requires exact agreement among in-memory registered artifacts, manifest entries, and physical regular files in staging (including transaction-owned control files). Every manifest path must be nonempty, normalized, relative, free from parent traversal, and resolve to a file contained within staging. Blank or whitespace-only manifest records are malformed and cause validation to fail; a normal final newline is allowed.
 
 ### Data audit and exploratory analysis
 
@@ -784,9 +784,9 @@ Each `.joblib` artifact also contains artifact-level provenance and model contex
 
 ### Output transaction behavior
 
-Staging is created beside the final output directory so promotion can use same-filesystem rename operations. The `fail` policy rejects a nonempty destination. The `replace` policy first moves existing output to a transaction-specific backup, then promotes staging to the final path. If promotion fails, restoration of the backup is attempted.
+Staging is created beside the final output directory so promotion can use same-filesystem rename operations. The `fail` policy rejects a nonempty destination. Under the `replace` policy, the previous output is first moved to a transaction-specific backup, after which staging is promoted to the final path. If promotion fails, restoration of the backup is attempted. Individual rename operations are atomic only on supported same-filesystem configurations; the complete backup-and-promote sequence is not a single atomic swap and includes a temporary interval in which the final path may be absent.
 
-Staged output is promoted using same-filesystem rename operations. Under the replace policy, the previous output is first moved to a transaction-specific backup and restored if promotion fails. Individual rename operations are atomic on supported same-filesystem configurations, but the complete backup-and-promote sequence is not a single atomic swap. Operating-system and filesystem support affect rename behavior, and the sequence includes a temporary interval in which the final path may be absent.
+If both promotion and automatic backup restoration fail, viClassify preserves the backup when possible and reports its path for manual recovery. The transaction is then marked neither prepared nor committed.
 
 ## Loading an exported model
 
