@@ -1,6 +1,8 @@
 """Tests for output transaction protection and output policy behavior."""
 
 import json
+import shutil
+import traceback
 from pathlib import Path
 
 import pytest
@@ -42,6 +44,10 @@ def _write_valid_staging(staging):
     (staging / "generated_files.txt").write_text(
         "\n".join(names) + "\n", encoding="utf-8"
     )
+
+
+def _exception_notes(exc):
+    return getattr(exc, "__notes__", getattr(exc, "_viclassify_notes", []))
 
 
 def test_path_requires_prepared_output(tmp_path):
@@ -94,6 +100,27 @@ def test_path_rejects_absolute_path(tmp_path):
         analysis.transaction.rollback()
 
 
+@pytest.mark.parametrize(
+    "name",
+    [
+        r"nested\artifact.txt",
+        r"..\outside.txt",
+        r"C:\results\artifact.txt",
+        r"\\server\share\artifact.txt",
+    ],
+)
+def test_path_rejects_windows_style_artifact_paths(tmp_path, name):
+    analysis = _analysis(tmp_path)
+    analysis.prepare_output()
+    try:
+        with pytest.raises(ValueError):
+            analysis.path(name)
+        assert not analysis.generated_files
+        assert list(analysis.working_output_dir.iterdir()) == []
+    finally:
+        analysis.transaction.rollback()
+
+
 def test_path_registers_safe_nested_path_without_creating_it(tmp_path):
     analysis = _analysis(tmp_path)
     staging = analysis.prepare_output()
@@ -115,6 +142,11 @@ def test_path_registers_safe_nested_path_without_creating_it(tmp_path):
         ("nested/../../outside.txt\n", "parent traversal"),
         ("/absolute/file.txt\n", "absolute"),
         ("nested\\artifact.txt\n", "non-normalized"),
+        ("..\\outside.txt\n", "non-normalized"),
+        ("C:\\results\\artifact.txt\n", "non-normalized|absolute"),
+        ("\\\\server\\share\\artifact.txt\n", "non-normalized|absolute"),
+        ("\n", "blank lines"),
+        ("   \n", "blank lines"),
         ("generated_files.txt\n\nrun_status.json\nrun_metadata.json\n", "blank lines"),
         (
             "generated_files.txt\n \t\nrun_status.json\nrun_metadata.json\n",
@@ -138,10 +170,21 @@ def test_manifest_rejects_malformed_artifact_names(tmp_path, manifest_text, mess
 
 
 @pytest.mark.parametrize(
-    "registry_entry",
-    [".", "../outside.txt", "C:\\outside.txt", "nested\\artifact.txt"],
+    "registry_entry, message",
+    [
+        (r"nested\artifact.txt", "non-normalized"),
+        (r"..\outside.txt", "non-normalized"),
+        (r"C:\results\artifact.txt", "non-normalized|absolute"),
+        (r"\\server\share\artifact.txt", "non-normalized|absolute"),
+        ("/absolute/artifact.txt", "absolute"),
+        ("../outside.txt", "parent traversal"),
+        ("nested/../../outside.txt", "parent traversal"),
+        (".", "root-like"),
+        ("", "empty artifact path"),
+        ("   ", "empty artifact path"),
+    ],
 )
-def test_registry_rejects_unsafe_artifact_names(tmp_path, registry_entry):
+def test_registry_rejects_unsafe_artifact_names(tmp_path, registry_entry, message):
     data_file = tmp_path / "data.csv"
     data_file.write_text("X,Y\n1,A\n2,B\n", encoding="utf-8")
     txn = OutputTransaction(data_file, tmp_path / "output")
@@ -152,7 +195,7 @@ def test_registry_rejects_unsafe_artifact_names(tmp_path, registry_entry):
         "generated_files.txt\nrun_status.json\nrun_metadata.json\n", encoding="utf-8"
     )
     try:
-        with pytest.raises(RuntimeError, match="Generated-file registry"):
+        with pytest.raises(RuntimeError, match=f"Generated-file registry.*({message})"):
             txn.validate_staged_output({registry_entry})
     finally:
         txn.rollback()
@@ -214,11 +257,157 @@ def test_failed_status_error_does_not_hide_workflow_error(tmp_path, monkeypatch)
     with pytest.raises(RuntimeError) as caught:
         analysis.run()
     assert caught.value is original
+    assert any(
+        "Failed-status recording also failed" in note
+        for note in _exception_notes(caught.value)
+    )
     assert not analysis.working_output_dir.exists()
     assert not analysis.final_output_path.exists()
     assert not analysis.transaction.backup_path.exists()
     assert not analysis.transaction.prepared
     assert not analysis.transaction.committed
+
+
+def test_workflow_error_remains_primary_after_successful_cleanup(tmp_path, monkeypatch):
+    analysis = _analysis(tmp_path)
+    original = RuntimeError("primary workflow failure")
+
+    def fail_load():
+        raise original
+
+    monkeypatch.setattr(analysis, "load", fail_load)
+    with pytest.raises(RuntimeError, match="primary workflow failure") as caught:
+        analysis.run()
+
+    assert caught.value is original
+    assert not analysis.working_output_dir.exists()
+    assert not analysis.final_output_path.exists()
+    assert not analysis.transaction.prepared
+    assert not analysis.transaction.committed
+
+
+def test_workflow_error_remains_primary_after_rollback_failure(tmp_path, monkeypatch):
+    analysis = _analysis(tmp_path)
+    original = RuntimeError("primary workflow failure")
+    rollback_error = OSError("rollback blocked")
+
+    def fail_load():
+        raise original
+
+    def fail_rollback():
+        raise rollback_error
+
+    prepare_output = analysis.prepare_output
+    monkeypatch.setattr(analysis, "load", fail_load)
+    with pytest.raises(RuntimeError, match="primary workflow failure") as caught:
+        # run() constructs its transaction during output preparation.
+        monkeypatch.setattr(
+            analysis,
+            "prepare_output",
+            lambda: _prepare_with_rollback_failure(
+                analysis, prepare_output, monkeypatch, fail_rollback
+            ),
+        )
+        analysis.run()
+
+    assert caught.value is original
+    assert any(
+        "Transaction rollback also failed: OSError: rollback blocked" in note
+        for note in _exception_notes(caught.value)
+    )
+    assert any(frame.name == "fail_load" for frame in traceback.extract_tb(caught.tb))
+    assert analysis.working_output_dir.exists()
+    assert not analysis.transaction.committed
+    shutil.rmtree(analysis.working_output_dir, ignore_errors=True)
+
+
+def test_workflow_status_and_rollback_failures_keep_primary_error(
+    tmp_path, monkeypatch
+):
+    analysis = _analysis(tmp_path)
+    original = RuntimeError("primary workflow failure")
+    status_error = OSError("status reporting blocked")
+    rollback_error = OSError("rollback blocked")
+
+    def fail_load():
+        raise original
+
+    def fail_failed_status(status, error_info=None):
+        if status == "failed":
+            raise status_error
+
+    def fail_rollback():
+        raise rollback_error
+
+    prepare_output = analysis.prepare_output
+    monkeypatch.setattr(analysis, "load", fail_load)
+    monkeypatch.setattr(analysis, "write_run_status", fail_failed_status)
+    with pytest.raises(RuntimeError, match="primary workflow failure") as caught:
+        monkeypatch.setattr(
+            analysis,
+            "prepare_output",
+            lambda: _prepare_with_rollback_failure(
+                analysis, prepare_output, monkeypatch, fail_rollback
+            ),
+        )
+        analysis.run()
+
+    assert caught.value is original
+    notes = _exception_notes(caught.value)
+    assert any("Failed-status recording also failed" in note for note in notes)
+    assert any("Transaction rollback also failed" in note for note in notes)
+    assert any(frame.name == "fail_load" for frame in traceback.extract_tb(caught.tb))
+    assert analysis.working_output_dir.exists()
+    assert not analysis.transaction.committed
+    shutil.rmtree(analysis.working_output_dir, ignore_errors=True)
+
+
+def _prepare_with_rollback_failure(
+    analysis, prepare_output, monkeypatch, fail_rollback
+):
+    staging = prepare_output()
+    monkeypatch.setattr(analysis.transaction, "rollback", fail_rollback)
+    return staging
+
+
+def test_running_status_failure_remains_primary_when_rollback_fails(
+    tmp_path, monkeypatch
+):
+    analysis = _analysis(tmp_path)
+    running_error = RuntimeError("running status failed")
+    rollback_error = OSError("rollback blocked")
+    original_write_status = analysis.write_run_status
+
+    def fail_running_status(status, error_info=None):
+        if status == "running":
+            raise running_error
+        return original_write_status(status, error_info)
+
+    monkeypatch.setattr(analysis, "write_run_status", fail_running_status)
+
+    original_prepare_output = analysis.prepare_output
+
+    def prepare_with_failing_rollback():
+        staging = original_prepare_output()
+
+        def fail_rollback():
+            raise rollback_error
+
+        monkeypatch.setattr(analysis.transaction, "rollback", fail_rollback)
+        return staging
+
+    monkeypatch.setattr(analysis, "prepare_output", prepare_with_failing_rollback)
+    with pytest.raises(RuntimeError, match="running status failed") as caught:
+        analysis.run()
+
+    assert caught.value is running_error
+    assert any(
+        "Transaction rollback also failed" in note
+        for note in _exception_notes(caught.value)
+    )
+    assert analysis.working_output_dir.exists()
+    assert not analysis.transaction.committed
+    shutil.rmtree(analysis.working_output_dir, ignore_errors=True)
 
 
 def test_run_analysis_stages_requires_explicit_preparation(tmp_path):
@@ -776,14 +965,15 @@ class TestOutputTransaction:
         staging = txn.prepare()
         _write_valid_staging(staging)
         removal_error = OSError("empty destination removal blocked")
-        real_rmdir = __import__("viclassify_cli").os.rmdir
 
-        def fail_rmdir(path):
-            if Path(path) == output_dir:
-                raise removal_error
-            return real_rmdir(path)
+        def fail_remove_empty_destination():
+            raise removal_error
 
-        monkeypatch.setattr("viclassify_cli.os.rmdir", fail_rmdir)
+        monkeypatch.setattr(
+            txn,
+            "_remove_empty_destination",
+            fail_remove_empty_destination,
+        )
         with pytest.raises(
             RuntimeError,
             match="Failed to prepare the final output location for promotion",

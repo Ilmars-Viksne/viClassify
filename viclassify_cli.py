@@ -13,7 +13,7 @@ import uuid
 import warnings
 from copy import deepcopy
 from dataclasses import asdict, dataclass
-from pathlib import Path, PureWindowsPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, ClassVar
 
 import joblib
@@ -59,26 +59,49 @@ def validate_relative_artifact_name(name: object, *, source: str) -> str:
     """Validate one normalized POSIX-style artifact path."""
     if not isinstance(name, str) or not name.strip():
         raise RuntimeError(f"{source} contains an empty artifact path.")
+    if "\\" in name:
+        raise RuntimeError(
+            f"{source} contains a non-normalized artifact path: {name!r}"
+        )
 
     relative_path = Path(name)
+    posix_path = PurePosixPath(name)
     windows_path = PureWindowsPath(name)
-    if relative_path == Path(".") or name == ".":
+    if relative_path == Path(".") or posix_path == PurePosixPath("."):
         raise RuntimeError(f"{source} contains a root-like artifact path: {name!r}")
-    if relative_path.is_absolute() or windows_path.is_absolute() or windows_path.drive:
+    if (
+        posix_path.is_absolute()
+        or windows_path.is_absolute()
+        or bool(windows_path.drive)
+    ):
         raise RuntimeError(f"{source} contains an absolute artifact path: {name!r}")
-    if ".." in relative_path.parts or ".." in windows_path.parts:
+    if ".." in posix_path.parts or ".." in windows_path.parts:
         raise RuntimeError(f"{source} contains parent traversal: {name!r}")
 
-    normalized_name = relative_path.as_posix()
+    normalized_name = posix_path.as_posix()
     if normalized_name != name:
         raise RuntimeError(
             f"{source} contains a non-normalized artifact path: {name!r}"
         )
-    if any(part.startswith((".staging-", ".backup-")) for part in relative_path.parts):
+    if any(part.startswith((".staging-", ".backup-")) for part in posix_path.parts):
         raise RuntimeError(
             f"{source} contains a reserved staging or backup path: {name!r}"
         )
     return normalized_name
+
+
+def _add_exception_note(exc: BaseException, note: str) -> None:
+    """Attach diagnostics without replacing the primary exception."""
+    add_note = getattr(exc, "add_note", None)
+    if callable(add_note):
+        add_note(note)
+        return
+
+    notes = getattr(exc, "_viclassify_notes", None)
+    if notes is None:
+        notes = []
+        exc._viclassify_notes = notes
+    notes.append(note)
 
 
 def align_probabilities_for_log_loss(
@@ -423,7 +446,7 @@ class OutputTransaction:
                     previous_output_backed_up = True
                     os.rename(self.final_path, self.backup_path)
                 else:  # fail policy allows an existing empty directory
-                    os.rmdir(self.final_path)
+                    self._remove_empty_destination()
                     empty_destination_removed = True
 
             failed_operation = "promote staged output"
@@ -487,6 +510,10 @@ class OutputTransaction:
                         f"'{self.backup_path}' and may require manual recovery."
                     )
             raise RuntimeError(message) from exc
+
+    def _remove_empty_destination(self) -> None:
+        """Remove an existing empty final-output directory."""
+        os.rmdir(self.final_path)
 
     def rollback(self) -> None:
         """Remove staging directory and restore backup if needed."""
@@ -871,7 +898,11 @@ class ClassificationAnalysis:
         except RuntimeError as exc:
             if not isinstance(name, str) or not name.strip():
                 message = "Generated output path must be a non-empty relative path."
-            elif "absolute artifact path" in str(exc):
+            elif (
+                "absolute artifact path" in str(exc)
+                or PureWindowsPath(name).drive
+                or PurePosixPath(name).is_absolute()
+            ):
                 message = f"Generated output path must be relative: {name!r}"
             else:
                 message = f"Generated output path is unsafe: {name!r}"
@@ -2996,7 +3027,9 @@ class ClassificationAnalysis:
             if self.transaction is None:
                 raise RuntimeError("Output transaction is unavailable during commit.")
             self.transaction.commit(self.generated_files)
-        except Exception as exc:
+        except Exception as primary_exc:
+            status_error: Exception | None = None
+            rollback_error: Exception | None = None
             try:
                 if (
                     self.working_output_dir is not None
@@ -3005,14 +3038,31 @@ class ClassificationAnalysis:
                     self.write_run_status(
                         "failed",
                         error_info={
-                            "type": exc.__class__.__name__,
-                            "message": str(exc),
+                            "type": primary_exc.__class__.__name__,
+                            "message": str(primary_exc),
                         },
                     )
-            except Exception:  # noqa: BLE001, S110 - status reporting is best-effort
-                pass
-            if self.transaction is not None and not self.transaction.committed:
-                self.transaction.rollback()
+            except Exception as exc:  # noqa: BLE001 - preserve the primary failure
+                status_error = exc
+
+            try:
+                if self.transaction is not None and not self.transaction.committed:
+                    self.transaction.rollback()
+            except Exception as exc:  # noqa: BLE001 - preserve the primary failure
+                rollback_error = exc
+
+            if status_error is not None:
+                _add_exception_note(
+                    primary_exc,
+                    "Failed-status recording also failed: "
+                    f"{type(status_error).__name__}: {status_error}",
+                )
+            if rollback_error is not None:
+                _add_exception_note(
+                    primary_exc,
+                    "Transaction rollback also failed: "
+                    f"{type(rollback_error).__name__}: {rollback_error}",
+                )
             raise
 
         self.heading("Analysis completed")
