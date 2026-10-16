@@ -209,7 +209,7 @@ class OutputTransaction:
         # Create parent and staging directories
         self.final_path.parent.mkdir(parents=True, exist_ok=True)
         if self.staging_path.exists():
-            shutil.rmtree(self.staging_path, ignore_errors=True)
+            shutil.rmtree(self.staging_path)
         self.staging_path.mkdir(parents=True, exist_ok=False)
 
         self._prepared = True
@@ -296,6 +296,23 @@ class OutputTransaction:
                 "Generated-file manifest 'generated_files.txt' contains duplicate entries."
             )
 
+        for entry in manifest_entries:
+            rel_path = Path(entry)
+            if (
+                rel_path.is_absolute()
+                or ".." in rel_path.parts
+                or rel_path.as_posix() != entry
+            ):
+                raise RuntimeError(
+                    f"Manifest path is unsafe or not normalized: '{entry}'"
+                )
+            if any(
+                part.startswith((".staging-", ".backup-")) for part in rel_path.parts
+            ):
+                raise RuntimeError(
+                    f"Manifest contains transient staging or backup path: '{entry}'"
+                )
+
         expected_entries = set(generated_files) | {
             "generated_files.txt",
             "run_status.json",
@@ -377,12 +394,24 @@ class OutputTransaction:
         try:
             os.rename(self.staging_path, self.final_path)
         except Exception as exc:
-            # If rename failed and backup exists, restore backup
-            if self.backup_path.exists() and not self.final_path.exists():
-                os.rename(self.backup_path, self.final_path)
-            raise RuntimeError(
-                f"Failed to commit transaction to '{self.final_path}': {exc}"
-            ) from exc
+            recovery_error: Exception | None = None
+            try:
+                if self.backup_path.exists() and not self.final_path.exists():
+                    os.rename(self.backup_path, self.final_path)
+            except Exception as restore_exc:  # noqa: BLE001 - recovery must reset state
+                recovery_error = restore_exc
+            finally:
+                if self.staging_path.exists():
+                    shutil.rmtree(self.staging_path, ignore_errors=True)
+                self._prepared = False
+                self._committed = False
+
+            message = f"Failed to commit transaction to '{self.final_path}': {exc}"
+            if recovery_error is not None:
+                message += (
+                    f". Restoring the previous output also failed: {recovery_error}"
+                )
+            raise RuntimeError(message) from exc
 
         # Clean up backup after successful commit
         if self.backup_path.exists():

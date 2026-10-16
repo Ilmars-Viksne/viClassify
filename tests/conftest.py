@@ -265,29 +265,35 @@ def create_analysis(
     )
 
 
+DEFAULT_ANALYSIS_STAGES = [
+    "load",
+    "audit_and_describe",
+    "correlations",
+    "exploratory_plots",
+    "create_chronological_split",
+    "build_models",
+    "tune_on_training_only",
+    "evaluate_untouched_holdout",
+    "export_evaluation_logistic_outputs",
+    "refit_and_export_production_models",
+    "metadata",
+    "write_generated_file_manifest",
+]
+
+
 def run_analysis_stages(
     analysis: ClassificationAnalysis,
     stages: list[str] | None = None,
 ) -> None:
-    """Run specific stages of the analysis pipeline."""
-    if stages is None:
-        stages = [
-            "load",
-            "audit_and_describe",
-            "correlations",
-            "exploratory_plots",
-            "create_chronological_split",
-            "build_models",
-            "tune_on_training_only",
-            "evaluate_untouched_holdout",
-            "export_evaluation_logistic_outputs",
-            "refit_and_export_production_models",
-            "metadata",
-            "write_generated_file_manifest",
-        ]
+    """Run selected stages after explicit output preparation."""
+    if analysis.working_output_dir is None:
+        raise RuntimeError(
+            "Call analysis.prepare_output() before run_analysis_stages()."
+        )
 
-    for stage in stages:
-        getattr(analysis, stage)()
+    selected_stages = stages if stages is not None else DEFAULT_ANALYSIS_STAGES
+    for stage_name in selected_stages:
+        getattr(analysis, stage_name)()
 
 
 # =============================================================================

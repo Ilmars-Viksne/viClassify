@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import pytest
+from conftest import run_analysis_stages
 
 from viclassify_cli import ClassificationAnalysis, Config, OutputTransaction
 
@@ -25,6 +26,22 @@ def _analysis(tmp_path):
         dpi=50,
     )
     return ClassificationAnalysis(cfg)
+
+
+def _valid_generated_files():
+    return {"run_metadata.json", "artifact.txt"}
+
+
+def _write_valid_staging(staging):
+    (staging / "run_metadata.json").write_text("{}", encoding="utf-8")
+    (staging / "run_status.json").write_text("{}", encoding="utf-8")
+    (staging / "artifact.txt").write_text("artifact", encoding="utf-8")
+    names = sorted(
+        _valid_generated_files() | {"generated_files.txt", "run_status.json"}
+    )
+    (staging / "generated_files.txt").write_text(
+        "\n".join(names) + "\n", encoding="utf-8"
+    )
 
 
 def test_path_requires_prepared_output(tmp_path):
@@ -130,6 +147,11 @@ def test_failed_status_error_does_not_hide_workflow_error(tmp_path, monkeypatch)
     assert not analysis.transaction.backup_path.exists()
     assert not analysis.transaction.prepared
     assert not analysis.transaction.committed
+
+
+def test_run_analysis_stages_requires_explicit_preparation(tmp_path):
+    with pytest.raises(RuntimeError, match=r"Call analysis.prepare_output\(\)"):
+        run_analysis_stages(_analysis(tmp_path), stages=[])
 
 
 class TestOutputTransaction:
@@ -502,6 +524,8 @@ class TestOutputTransaction:
 
         # 2. Prepare transaction
         staging = txn.prepare()
+        assert txn.prepared
+        assert not txn.committed
         (staging / "run_metadata.json").write_text("{}", encoding="utf-8")
         (staging / "run_status.json").write_text("{}", encoding="utf-8")
         (staging / "generated_files.txt").write_text(
@@ -517,6 +541,8 @@ class TestOutputTransaction:
 
         # 4. Commit transaction
         txn.commit({"run_metadata.json"})
+        assert not txn.prepared
+        assert txn.committed
 
         # 5. Repeated commit fails
         with pytest.raises(
@@ -535,6 +561,152 @@ class TestOutputTransaction:
             RuntimeError, match="A committed transaction cannot be rolled back"
         ):
             txn.rollback()
+
+    def test_rollback_allows_clean_repreparation(self, tmp_path):
+        data_file = tmp_path / "data.csv"
+        data_file.write_text("X,Y\n1,A\n2,B\n", encoding="utf-8")
+        txn = OutputTransaction(data_file, tmp_path / "out_reprepare")
+
+        first_staging = txn.prepare()
+        (first_staging / "old-attempt.txt").write_text("old", encoding="utf-8")
+        txn.rollback()
+        assert not first_staging.exists()
+        assert not txn.prepared
+        assert not txn.committed
+
+        second_staging = txn.prepare()
+        assert txn.prepared
+        assert not txn.committed
+        assert second_staging == first_staging
+        assert list(second_staging.iterdir()) == []
+        txn.rollback()
+        assert not txn.prepared
+        assert not txn.committed
+
+    def test_failed_promotion_restores_previous_output(self, tmp_path, monkeypatch):
+        data_file = tmp_path / "data.csv"
+        data_file.write_text("X,Y\n1,A\n2,B\n", encoding="utf-8")
+        output_dir = tmp_path / "existing"
+        output_dir.mkdir()
+        (output_dir / "old.txt").write_text("old output", encoding="utf-8")
+        txn = OutputTransaction(data_file, output_dir, policy="replace")
+        staging = txn.prepare()
+        _write_valid_staging(staging)
+
+        real_rename = __import__("viclassify_cli").os.rename
+        promotion_error = OSError("promotion blocked")
+
+        def fail_promotion(src, dst):
+            if Path(src) == staging and Path(dst) == output_dir:
+                raise promotion_error
+            return real_rename(src, dst)
+
+        monkeypatch.setattr("viclassify_cli.os.rename", fail_promotion)
+        with pytest.raises(RuntimeError, match="promotion blocked") as caught:
+            txn.commit(_valid_generated_files())
+
+        assert caught.value.__cause__ is promotion_error
+        assert (output_dir / "old.txt").read_text(encoding="utf-8") == "old output"
+        assert not staging.exists()
+        assert not txn.backup_path.exists()
+        assert not txn.prepared
+        assert not txn.committed
+
+    def test_failed_promotion_and_restore_resets_state(self, tmp_path, monkeypatch):
+        data_file = tmp_path / "data.csv"
+        data_file.write_text("X,Y\n1,A\n2,B\n", encoding="utf-8")
+        output_dir = tmp_path / "existing"
+        output_dir.mkdir()
+        (output_dir / "old.txt").write_text("old output", encoding="utf-8")
+        txn = OutputTransaction(data_file, output_dir, policy="replace")
+        staging = txn.prepare()
+        _write_valid_staging(staging)
+
+        real_rename = __import__("viclassify_cli").os.rename
+        promotion_error = OSError("promotion blocked")
+        restore_error = OSError("restore blocked")
+
+        def fail_promotion_and_restore(src, dst):
+            if Path(src) == staging and Path(dst) == output_dir:
+                raise promotion_error
+            if Path(src) == txn.backup_path and Path(dst) == output_dir:
+                raise restore_error
+            return real_rename(src, dst)
+
+        monkeypatch.setattr("viclassify_cli.os.rename", fail_promotion_and_restore)
+        with pytest.raises(
+            RuntimeError, match="promotion blocked.*restore blocked"
+        ) as caught:
+            txn.commit(_valid_generated_files())
+
+        assert caught.value.__cause__ is promotion_error
+        assert not staging.exists()
+        assert txn.backup_path.exists()
+        assert not txn.prepared
+        assert not txn.committed
+
+    @pytest.mark.parametrize(
+        "mutation, registered",
+        [
+            ("unregistered_root", {"run_metadata.json", "artifact.txt"}),
+            ("unregistered_nested", {"run_metadata.json", "artifact.txt"}),
+            ("listed_missing", {"run_metadata.json", "artifact.txt"}),
+            ("registered_omitted", {"run_metadata.json", "artifact.txt", "extra.txt"}),
+            ("manifest_unregistered", {"run_metadata.json", "artifact.txt"}),
+            ("duplicate", {"run_metadata.json", "artifact.txt"}),
+            ("absolute", {"run_metadata.json", "artifact.txt"}),
+            ("traversal", {"run_metadata.json", "artifact.txt"}),
+        ],
+    )
+    def test_exact_manifest_validation_preserves_existing_output(
+        self, tmp_path, mutation, registered
+    ):
+        data_file = tmp_path / "data.csv"
+        data_file.write_text("X,Y\n1,A\n2,B\n", encoding="utf-8")
+        output_dir = tmp_path / "existing"
+        output_dir.mkdir()
+        (output_dir / "old.txt").write_text("old output", encoding="utf-8")
+        txn = OutputTransaction(data_file, output_dir, policy="replace")
+        staging = txn.prepare()
+        _write_valid_staging(staging)
+        manifest = [
+            "generated_files.txt",
+            "run_status.json",
+            "run_metadata.json",
+            "artifact.txt",
+        ]
+
+        if mutation == "unregistered_root":
+            (staging / "stray.txt").write_text("stray", encoding="utf-8")
+        elif mutation == "unregistered_nested":
+            nested = staging / "nested"
+            nested.mkdir()
+            (nested / "stray.txt").write_text("stray", encoding="utf-8")
+        elif mutation == "listed_missing":
+            (staging / "artifact.txt").unlink()
+        elif mutation == "registered_omitted":
+            manifest.append("extra.txt")
+        elif mutation == "manifest_unregistered":
+            manifest.append("unregistered.txt")
+            (staging / "unregistered.txt").write_text("listed", encoding="utf-8")
+        elif mutation == "duplicate":
+            manifest.append("artifact.txt")
+        elif mutation == "absolute":
+            manifest.append(str((tmp_path / "outside.txt").resolve()))
+        elif mutation == "traversal":
+            manifest.append("../outside.txt")
+
+        (staging / "generated_files.txt").write_text(
+            "\n".join(manifest) + "\n", encoding="utf-8"
+        )
+        try:
+            with pytest.raises(RuntimeError):
+                txn.commit(registered)
+            assert (output_dir / "old.txt").read_text(encoding="utf-8") == "old output"
+            assert not txn.backup_path.exists()
+        finally:
+            if not txn.committed:
+                txn.rollback()
 
     def test_path_raises_runtime_error_if_not_prepared(self, tmp_path):
         """Test path() raises RuntimeError if output has not been prepared."""
