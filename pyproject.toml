@@ -7,7 +7,7 @@ name = "viclassify"
 dynamic = ["version"]
 description = "Reproducible binary and multiclass classification for numerical tabular datasets"
 readme = "README.md"
-requires-python = ">=3.10,<3.13"
+requires-python = ">=3.10,<3.14"
 license = "Apache-2.0"
 authors = [{ name = "Ilmārs Vīksne" }]
 keywords = ["machine-learning", "classification", "scikit-learn", "tabular-data", "chronological-validation", "reproducibility"]
@@ -19,6 +19,7 @@ classifiers = [
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
@@ -48,7 +49,16 @@ path = "src/viclassify/version.py"
 packages = ["src/viclassify"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src/viclassify/**", "viclassify_cli.py", "README.md", "LICENSE", "pyproject.toml", "uv.lock"]
+include = [
+    "/src/viclassify/**",
+    "/examples/**",
+    "/tests/**",
+    "/viclassify_cli.py",
+    "/README.md",
+    "/LICENSE",
+    "/pyproject.toml",
+    "/uv.lock",
+]
 
 [tool.pytest.ini_options]
 pythonpath = ["src", "."]
