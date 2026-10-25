@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
 
 import joblib
 import pandas as pd
@@ -21,10 +21,21 @@ _MODEL_FILES = {
     "random_forest": "production_random_forest.joblib",
 }
 _PREDICTOR_PAIRS = [
-    ("X1", "X2"), ("X1", "X3"), ("X1", "X4"), ("X1", "X5"), ("X1", "X7"),
-    ("X2", "X3"), ("X2", "X4"), ("X2", "X5"), ("X2", "X7"),
-    ("X3", "X4"), ("X3", "X5"), ("X3", "X7"),
-    ("X4", "X5"), ("X4", "X7"), ("X5", "X7"),
+    ("X1", "X2"),
+    ("X1", "X3"),
+    ("X1", "X4"),
+    ("X1", "X5"),
+    ("X1", "X7"),
+    ("X2", "X3"),
+    ("X2", "X4"),
+    ("X2", "X5"),
+    ("X2", "X7"),
+    ("X3", "X4"),
+    ("X3", "X5"),
+    ("X3", "X7"),
+    ("X4", "X5"),
+    ("X4", "X7"),
+    ("X5", "X7"),
 ]
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -36,10 +47,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--model", choices=tuple(_MODEL_FILES), required=True)
     parser.add_argument("--data", type=Path, default=_PROJECT_ROOT / "data_OF.csv")
-    parser.add_argument("--results-dir", type=Path, default=_PROJECT_ROOT / "results_OF")
+    parser.add_argument(
+        "--results-dir", type=Path, default=_PROJECT_ROOT / "results_OF"
+    )
     parser.add_argument("--target", default="Y")
     parser.add_argument(
-        "--maximum-classes-per-figure", type=int,
+        "--maximum-classes-per-figure",
+        type=int,
         help="Maximum class panels per figure; defaults to every model class.",
     )
     parser.add_argument("--grid-resolution", type=int, default=200)
@@ -71,19 +85,25 @@ def run(args: argparse.Namespace) -> list[Path]:
     y = data[args.target].copy()
     model = payload["model"]
     if list(model.feature_names_in_) != list(features):
-        raise ValueError("Model predictor order does not match its exported feature list.")
+        raise ValueError(
+            "Model predictor order does not match its exported feature list."
+        )
 
     absent_pair_features = sorted(
         {name for pair in _PREDICTOR_PAIRS for name in pair} - set(features)
     )
-    pairs = [pair for pair in _PREDICTOR_PAIRS if all(name in features for name in pair)]
+    pairs = [
+        pair for pair in _PREDICTOR_PAIRS if all(name in features for name in pair)
+    ]
     if not pairs:
         raise ValueError(
             "The model has no predictors covered by the default X1-X7 pairs. "
             "Use a model with those predictors or extend the CLI pair configuration."
         )
     if absent_pair_features:
-        print(f"Skipping default pairs that use unavailable predictors: {absent_pair_features}")
+        print(
+            f"Skipping default pairs that use unavailable predictors: {absent_pair_features}"
+        )
 
     class_limit = (
         len(model.classes_)

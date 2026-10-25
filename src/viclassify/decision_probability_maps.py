@@ -6,6 +6,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import matplotlib
+
+matplotlib.use("Agg")
+
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -158,6 +162,7 @@ class DecisionProbabilityMapper:
                     output
                     / f"{filename_prefix}_{pair_number}_{first}_vs_{second}_decision.{ext}"
                 )
+                path.parent.mkdir(parents=True, exist_ok=True)
                 fig.tight_layout()
                 fig.savefig(path, dpi=self.config.dpi)
                 plt.close(fig)
@@ -230,6 +235,7 @@ class DecisionProbabilityMapper:
                 output
                 / f"{filename_prefix}_{pair_number}_{first}_vs_{second}_probabilities.{ext}"
             )
+            path.parent.mkdir(parents=True, exist_ok=True)
             fig.tight_layout()
             fig.savefig(path, dpi=self.config.dpi)
             plt.close(fig)
