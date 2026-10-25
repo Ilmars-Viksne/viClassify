@@ -23,8 +23,8 @@ from viclassify.decision_probability_maps import (
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DATA_FILE = PROJECT_ROOT / "data_OF.csv"
-RESULTS_DIRECTORY = PROJECT_ROOT / "results_OF"
+DATA_FILE = PROJECT_ROOT / "data_OBGM.csv"
+RESULTS_DIRECTORY = PROJECT_ROOT / "results_OBGM"
 MODEL_FILE = RESULTS_DIRECTORY / "production_logistic_regression.joblib"
 OUTPUT_DIRECTORY = (
     RESULTS_DIRECTORY / "decision_probability_maps" / "logistic_regression"
@@ -95,7 +95,7 @@ def main() -> None:
             padding_fraction=0.05,
             contour_levels=(0.10, 0.25, 0.50, 0.75, 0.90),
             multiclass_columns=3,
-            maximum_classes_per_figure=2,
+            maximum_classes_per_figure=4,
             probability_colormap="viridis",
             show_decision_overview=True,
             show_probability_contours=True,
@@ -112,7 +112,7 @@ def main() -> None:
         X_points=X_observed,
         y_points=y_observed,
         output_directory=OUTPUT_DIRECTORY,
-        filename_prefix="data_OF_logistic_regression",
+        filename_prefix="data_OBGM_logistic_regression",
     )
 
     print("Observed-data logistic-regression maps created successfully.")

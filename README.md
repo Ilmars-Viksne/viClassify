@@ -245,6 +245,27 @@ python viclassify_cli.py \
 
 ## Command-line reference
 
+### Probability maps from saved production models
+
+Use `viclassify-maps` to create decision and class-probability maps from any of the four exported production classifiers:
+
+```powershell
+viclassify-maps --model logistic_regression
+viclassify-maps --model histogram_gradient_boosting
+viclassify-maps --model extra_trees
+viclassify-maps --model random_forest
+```
+
+By default, the command reads `data_OF.csv` and the matching model artifact in `results_OF`, then writes figures to `results_OF/decision_probability_maps/<model>/`. The maximum number of class panels defaults to all classes in the model.
+
+To use another dataset and its matching results directory, for example OBGM:
+
+```powershell
+viclassify-maps --model logistic_regression --data data_OBGM.csv --results-dir results_OBGM
+```
+
+The CSV target defaults to `Y`. Use `--target` to select another target column. `--grid-resolution` and `--dpi` adjust map resolution and output quality. The existing model-specific scripts in `examples/` remain available for compatibility.
+
 | Argument | Required | Default | Validation and purpose |
 |---|---:|---|---|
 | `--data` | Yes | None | Input CSV path. The file must exist when analysis starts. |
