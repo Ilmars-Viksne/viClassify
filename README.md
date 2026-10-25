@@ -266,6 +266,15 @@ viclassify-maps --model logistic_regression --data data_OBGM.csv --results-dir r
 
 The CSV target defaults to `Y`. Use `--target` to select another target column. `--grid-resolution` and `--dpi` adjust map resolution and output quality. The existing model-specific scripts in `examples/` remain available for compatibility.
 
+By default, the CLI uses the established `X1`–`X7` predictor-pair selection, skipping pairs whose predictors are absent from the selected model. Choose specific pairs by repeating `--pair`, or generate every unique pair from the model's predictors with `--all-pairs`:
+
+```powershell
+viclassify-maps --model logistic_regression --data data_OBGM.csv --results-dir results_OBGM --pair X1 X2 --pair X3 X6
+viclassify-maps --model logistic_regression --data data_OBGM.csv --results-dir results_OBGM --all-pairs
+```
+
+`--pair` and `--all-pairs` are mutually exclusive. Each explicit pair must name two distinct predictors in the saved model.
+
 | Argument | Required | Default | Validation and purpose |
 |---|---:|---|---|
 | `--data` | Yes | None | Input CSV path. The file must exist when analysis starts. |

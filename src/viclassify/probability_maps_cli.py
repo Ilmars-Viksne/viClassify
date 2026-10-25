@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Sequence
+from itertools import combinations
 from pathlib import Path
 
 import joblib
@@ -56,6 +57,19 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         help="Maximum class panels per figure; defaults to every model class.",
     )
+    pair_options = parser.add_mutually_exclusive_group()
+    pair_options.add_argument(
+        "--pair",
+        action="append",
+        nargs=2,
+        metavar=("FIRST", "SECOND"),
+        help="Plot this predictor pair; repeat to select multiple pairs.",
+    )
+    pair_options.add_argument(
+        "--all-pairs",
+        action="store_true",
+        help="Plot every unique pair from the saved model's predictors.",
+    )
     parser.add_argument("--grid-resolution", type=int, default=200)
     parser.add_argument("--dpi", type=int, default=160)
     return parser
@@ -89,20 +103,37 @@ def run(args: argparse.Namespace) -> list[Path]:
             "Model predictor order does not match its exported feature list."
         )
 
-    absent_pair_features = sorted(
-        {name for pair in _PREDICTOR_PAIRS for name in pair} - set(features)
-    )
-    pairs = [
-        pair for pair in _PREDICTOR_PAIRS if all(name in features for name in pair)
-    ]
+    if args.all_pairs:
+        pairs = list(combinations(features, 2))
+    elif args.pair:
+        pairs = [tuple(pair) for pair in args.pair]
+        invalid_pairs = [
+            pair
+            for pair in pairs
+            if pair[0] == pair[1] or pair[0] not in features or pair[1] not in features
+        ]
+        if invalid_pairs:
+            raise ValueError(
+                "Requested pairs must contain two distinct model predictors. "
+                f"Invalid pairs: {invalid_pairs}; available predictors: {list(features)}"
+            )
+        if len(set(pairs)) != len(pairs):
+            raise ValueError("Requested predictor pairs must not contain duplicates.")
+    else:
+        absent_pair_features = sorted(
+            {name for pair in _PREDICTOR_PAIRS for name in pair} - set(features)
+        )
+        pairs = [
+            pair for pair in _PREDICTOR_PAIRS if all(name in features for name in pair)
+        ]
+        if absent_pair_features:
+            print(
+                "Skipping default pairs that use unavailable predictors: "
+                f"{absent_pair_features}"
+            )
     if not pairs:
         raise ValueError(
-            "The model has no predictors covered by the default X1-X7 pairs. "
-            "Use a model with those predictors or extend the CLI pair configuration."
-        )
-    if absent_pair_features:
-        print(
-            f"Skipping default pairs that use unavailable predictors: {absent_pair_features}"
+            "At least two model predictors are required to create a predictor pair."
         )
 
     class_limit = (
