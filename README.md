@@ -275,6 +275,20 @@ viclassify-maps --model logistic_regression --data data_OBGM.csv --results-dir r
 
 `--pair` and `--all-pairs` are mutually exclusive. Each explicit pair must name two distinct predictors in the saved model.
 
+### Target correlations
+
+Run `viclassify-correlation` to calculate point-biserial correlations between numeric predictors and a target column. The target defaults to `Y`; all numeric columns other than the target are analyzed. The output defaults to `results_<dataset>/target_correlation.csv` beside the input file.
+
+For a binary target, the CLI reports the selected positive class versus the other class. The default positive class is the last label encountered in the data; select it explicitly with `--positive-class` when sign direction matters. For a multiclass target, the CLI reports one-vs-rest correlations for each class.
+
+```powershell
+viclassify-correlation --data data_OF.csv --positive-class F
+viclassify-correlation --data data_OBGM.csv --target Y
+viclassify-correlation --data another_dataset.csv --target outcome --output reports/outcome_correlations.csv
+```
+
+The same options are available through the compatibility example: `python examples/target_correlation.py --data data_OBGM.csv --target Y`.
+
 | Argument | Required | Default | Validation and purpose |
 |---|---:|---|---|
 | `--data` | Yes | None | Input CSV path. The file must exist when analysis starts. |

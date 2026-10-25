@@ -42,6 +42,7 @@ dev = [
 [project.scripts]
 viclassify = "viclassify.cli:main"
 viclassify-maps = "viclassify.probability_maps_cli:main"
+viclassify-correlation = "viclassify.target_correlation:main"
 
 [tool.hatch.version]
 path = "src/viclassify/version.py"
