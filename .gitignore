@@ -1,36 +1,24 @@
-# ==========================================
-# Project Specific
-# ==========================================
+# Project-local inputs and generated outputs
 prompt*.md
 data_*.csv
-
-# ==========================================
-# OS Specific
-# ==========================================
-results_*/
 results*/
+/report/
 
-# ==========================================
-# Python Bytecode & Cache
-# ==========================================
-.pytest*/
-_pycache__/
+# Python bytecode and native extensions
 __pycache__/
 *.py[cod]
 *$py.class
-
-# C extensions
 *.so
 
-# ==========================================
-# Virtual Environments
-# ==========================================
+# Virtual environments
 .venv/
 .venv-*/
 venv/
 ENV/
 env/
 Active*/
+
+# Build and packaging artifacts
 build/
 develop-eggs/
 dist/
@@ -49,39 +37,31 @@ share/python-wheels/
 *.egg
 MANIFEST
 
-# ==========================================
-# Testing & Coverage
-# ==========================================
+# Tests, coverage, and analysis caches
+.pytest*/
 .tox/
 .nox/
+.hypothesis/
 .coverage
 .coverage.*
 .cache
 nosetests.xml
 coverage.xml
 htmlcov/
-.pytest_cache/
-.hypothesis/
 .ruff_cache/
 .mypy_cache/
 
-# ==========================================
-# Jupyter Notebooks
-# ==========================================
-.ipynb_checkpoints
+# Jupyter
+.ipynb_checkpoints/
 
-# ==========================================
-# Environment Variables & Secrets
-# ==========================================
+# Environment variables and local secrets
 .env
 config.local.yaml
 config.local.yml
 instance/
 .secret
 
-# ==========================================
-# IDEs & Editor Specifics
-# ==========================================
+# IDE and editor files
 .vscode/
 .idea/
 *.suo
@@ -91,8 +71,6 @@ instance/
 *.swp
 *~
 
-# ==========================================
-# OS Specific
-# ==========================================
+# Operating-system files
 .DS_Store
 Thumbs.db
